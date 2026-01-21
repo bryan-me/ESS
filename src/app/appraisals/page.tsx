@@ -4,8 +4,11 @@ import { useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
 
 export default function AppraisalsPage() {
-  const { user, role } = useAuth();
+  const { user } = useAuth();
   const [showReviewModal, setShowReviewModal] = useState(false);
+
+  // Access role from user object
+  const role = user?.role || 'employee';
 
   // Mock appraisals data - similar to Leave page's approach
   const appraisals = [
