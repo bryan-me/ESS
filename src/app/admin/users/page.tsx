@@ -788,7 +788,90 @@ export default function AdminUsersPage() {
                 <h3 className="text-lg font-medium text-gray-900 mb-4">Create New User</h3>
                 <form onSubmit={handleCreateUser}>
                   <div className="space-y-4">
-                    {/* ... (keep the existing form fields as they are) ... */}
+                    <div>
+                      <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+                        Email Address *
+                      </label>
+                      <input
+                        type="email"
+                        id="email"
+                        required
+                        value={formData.email}
+                        onChange={(e) => setFormData({...formData, email: e.target.value})}
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="displayName" className="block text-sm font-medium text-gray-700">
+                        Full Name *
+                      </label>
+                      <input
+                        type="text"
+                        id="displayName"
+                        required
+                        value={formData.displayName}
+                        onChange={(e) => setFormData({...formData, displayName: e.target.value})}
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="role" className="block text-sm font-medium text-gray-700">
+                        Role *
+                      </label>
+                      <select
+                        id="role"
+                        required
+                        value={formData.role}
+                        onChange={(e) => setFormData({...formData, role: e.target.value as UserRole})}
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                      >
+                        <option value="employee">Employee</option>
+                        <option value="manager">Manager</option>
+                        <option value="hr">HR</option>
+                        <option value="admin">Administrator</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="department" className="block text-sm font-medium text-gray-700">
+                        Department
+                      </label>
+                      <input
+                        type="text"
+                        id="department"
+                        value={formData.department}
+                        onChange={(e) => setFormData({...formData, department: e.target.value})}
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="position" className="block text-sm font-medium text-gray-700">
+                        Position
+                      </label>
+                      <input
+                        type="text"
+                        id="position"
+                        value={formData.position}
+                        onChange={(e) => setFormData({...formData, position: e.target.value})}
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="temporaryPassword" className="block text-sm font-medium text-gray-700">
+                        Temporary Password *
+                      </label>
+                      <input
+                        type="text"
+                        id="temporaryPassword"
+                        required
+                        value={formData.temporaryPassword}
+                        onChange={(e) => setFormData({...formData, temporaryPassword: e.target.value})}
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        placeholder="Will be required to change on first login"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        User must change this password on first login
+                      </p>
+                    </div>
                   </div>
                   <div className="mt-6 flex justify-end space-x-3">
                     <button
