@@ -5,7 +5,7 @@ import { useAuth } from '@/lib/useAuth';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', current: true },
-  { name: 'Payslips', href: '/payslips', current: false },
+  { name: 'Purchase Requests', href: '/purchase-requests', current: false },
   { name: 'Leave', href: '/leave', current: false },
   { name: 'Appraisals', href: '/appraisals', current: false },
 ];

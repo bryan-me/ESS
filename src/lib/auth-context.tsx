@@ -14,18 +14,22 @@ import {
   User,
   sendPasswordResetEmail
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { useRouter } from 'next/navigation';
 
-export type UserRole = 'employee' | 'manager' | 'hr' | 'admin';
+// UPDATED: Department types based on your structure
+export type Department = 'Finance/Admin' | 'Human Resource' | 'Procurement/Logistics' | 'Marketing and Sales' | 'General';
+
+// UPDATED: Roles with department-specific variations
+export type UserRole = 'employee' | 'manager' | 'hr' | 'admin' | 'ceo' | 'finance_manager' | 'finance' | 'procurement' | 'logistics' | 'marketing' | 'sales';
 
 interface UserData {
   uid: string;
   email: string | null;
   displayName: string | null;
   role: UserRole;
-  department?: string;
+  department: Department; // Changed from optional to required
   position?: string;
   customClaims?: any;
   createdAt?: any;
@@ -41,24 +45,55 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   hasPermission: (requiredRole: UserRole) => boolean;
+  hasDepartmentAccess: (requiredDepartment: Department | Department[]) => boolean;
   refreshToken: () => Promise<void>;
   signUp: (email: string, password: string, displayName?: string) => Promise<void>;
   userData: UserData | null;
   changePasswordOnFirstLogin: (newPassword: string) => Promise<void>;
-  changePassword: (currentPassword: string, newPassword: string) => Promise<void>; // Add this
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   createUser: (userData: AdminCreateUserData) => Promise<string>;
   updateUser: (uid: string, updates: Partial<UserData>) => Promise<void>;
   sendPasswordResetEmail: (email: string) => Promise<void>;
-  updateUserRequiresPasswordChange: (requiresChange: boolean) => void; // Add this
+  updateUserRequiresPasswordChange: (requiresChange: boolean) => void;
+  // UPDATED: Better permission checking
+  canPerformAction: (action: PurchaseAction | FinanceAction | HRAction | AdminAction) => boolean;
+  // NEW: Department management
+  getDepartmentManagers: () => Promise<{department: Department, managers: UserData[]}>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+// Action types for permission checking
+type PurchaseAction = 
+  | 'submit_purchase_request'
+  | 'approve_department_purchase'
+  | 'approve_ceo_purchase'
+  | 'process_procurement'
+  | 'view_all_purchases';
+
+type FinanceAction = 
+  | 'process_finance_approval'
+  | 'generate_purchase_order'
+  | 'view_finance_reports'
+  | 'manage_budget';
+
+type HRAction = 
+  | 'manage_leave_requests'
+  | 'manage_employees'
+  | 'view_hr_reports'
+  | 'approve_hr_requests';
+
+type AdminAction = 
+  | 'manage_users'
+  | 'manage_departments'
+  | 'system_settings'
+  | 'view_all_reports';
 
 interface AdminCreateUserData {
   email: string;
   displayName: string;
   role: UserRole;
-  department?: string;
+  department: Department;
   position?: string;
   temporaryPassword: string;
 }
@@ -83,7 +118,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email: firebaseUser.email,
           displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
           role: 'employee' as UserRole,
-          department: 'General',
+          department: 'General' as Department,
           position: 'Employee',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -96,9 +131,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Create leave balance
         const balanceRef = doc(db, 'leaveBalance', firebaseUser.uid);
         await setDoc(balanceRef, {
-          annual: 0,  // Start at 0
-          sick: 0,    // Start at 0
-          personal: 0, // Start at 0
+          annual: 0,
+          sick: 0,
+          personal: 0,
           createdAt: serverTimestamp(),
           totalDaysWorked: 0,
           lastUpdated: serverTimestamp()
@@ -125,7 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email: firebaseUser.email,
           displayName: firebaseUser.displayName || docData.displayName || firebaseUser.email?.split('@')[0] || 'User',
           role: (docData.role as UserRole) || 'employee',
-          department: docData.department,
+          department: (docData.department as Department) || 'General',
           position: docData.position,
           createdAt: docData.createdAt,
           lastLogin: serverTimestamp(),
@@ -144,6 +179,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: firebaseUser.email,
         displayName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
         role: 'employee',
+        department: 'General',
         requiresPasswordChange: true
       };
       
@@ -285,22 +321,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           email: userData.email,
           displayName: userData.displayName,
           role: userData.role,
-          department: userData.department || 'General',
+          department: userData.department,
           position: userData.position || 'Employee',
           createdAt: serverTimestamp(),
-          hireDate: serverTimestamp(), // Add this to track actual hire date
+          hireDate: serverTimestamp(),
           updatedAt: serverTimestamp(),
           createdBy: auth.currentUser.uid,
           requiresPasswordChange: true,
           passwordChangedAt: null
         });
 
-        // In createUser function, change the balance initialization:
         const balanceRef = doc(db, 'leaveBalance', userCredential.user.uid);
         await setDoc(balanceRef, {
-          annual: 0,  // Changed from 20 to 0
-          sick: 0,    // Changed from 10 to 0
-          personal: 0, // Changed from 5 to 0
+          annual: 0,
+          sick: 0,
+          personal: 0,
           createdAt: serverTimestamp(),
           totalDaysWorked: 0,
           lastUpdated: serverTimestamp()
@@ -333,7 +368,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Regular password change function (for users who already have a password)
   const changePassword = async (currentPassword: string, newPassword: string) => {
     try {
       if (!auth.currentUser || !auth.currentUser.email) {
@@ -363,7 +397,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // First-time password change function (for users with temporary passwords)
   const changePasswordOnFirstLogin = async (newPassword: string) => {
     try {
       if (!auth.currentUser || !auth.currentUser.email) {
@@ -436,7 +469,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Function to update user's requiresPasswordChange in local state
   const updateUserRequiresPasswordChange = (requiresChange: boolean) => {
     setUser(prev => {
       if (!prev) return null;
@@ -523,17 +555,170 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  // UPDATED: Enhanced role hierarchy with departments
   const hasPermission = (requiredRole: UserRole): boolean => {
     if (!user) return false;
     
     const roleHierarchy: Record<UserRole, number> = {
       employee: 1,
-      manager: 2,
+      procurement: 2,
+      logistics: 2,
+      marketing: 2,
+      sales: 2,
+      finance: 2,
       hr: 3,
-      admin: 4
+      manager: 4,
+      finance_manager: 4,
+      ceo: 5,
+      admin: 6
     };
     
     return roleHierarchy[user.role] >= roleHierarchy[requiredRole];
+  };
+
+  // NEW: Check if user has access to specific department(s)
+  const hasDepartmentAccess = (requiredDepartment: Department | Department[]): boolean => {
+    if (!user) return false;
+    
+    const departments = Array.isArray(requiredDepartment) 
+      ? requiredDepartment 
+      : [requiredDepartment];
+    
+    // Admins have access to all departments
+    if (user.role === 'admin' || user.role === 'ceo') {
+      return true;
+    }
+    
+    // HR typically has access to view all departments for HR purposes
+    if (user.role === 'hr' && departments.includes('Human Resource')) {
+      return true;
+    }
+    
+    // Check if user's department matches any required department
+    return departments.includes(user.department);
+  };
+
+  // UPDATED: Enhanced action permission checking with department awareness
+  const canPerformAction = (action: PurchaseAction | FinanceAction | HRAction | AdminAction): boolean => {
+    if (!user) return false;
+    
+    switch(action) {
+      // Purchase Actions
+      case 'submit_purchase_request':
+        // All employees can submit purchase requests
+        return true;
+      
+      case 'approve_department_purchase':
+        // Department managers and admins can approve within their department
+        return (user.role === 'manager' || user.role === 'admin') && 
+               user.department !== 'General';
+      
+      case 'approve_ceo_purchase':
+        // CEO and admins for final approval
+        return user.role === 'ceo' || user.role === 'admin';
+      
+      case 'process_procurement':
+        // Procurement/Logistics department for processing
+        return user.department === 'Procurement/Logistics' || 
+               user.role === 'admin';
+      
+      case 'view_all_purchases':
+        // Managers, HR, Finance, CEOs, Admins can view all
+        return ['manager', 'hr', 'finance', 'finance_manager', 'ceo', 'admin'].includes(user.role);
+      
+      // Finance Actions
+      case 'process_finance_approval':
+        // Finance department only
+        return user.department === 'Finance/Admin' || 
+               user.role === 'finance' || 
+               user.role === 'finance_manager' || 
+               user.role === 'admin';
+      
+      case 'generate_purchase_order':
+        // Finance department and admins
+        return user.department === 'Finance/Admin' || 
+               user.role === 'finance_manager' || 
+               user.role === 'admin';
+      
+      case 'view_finance_reports':
+        // Finance department, managers, admins, CEO
+        return user.department === 'Finance/Admin' || 
+               ['manager', 'ceo', 'admin'].includes(user.role);
+      
+      case 'manage_budget':
+        // Finance managers and admins only
+        return user.role === 'finance_manager' || user.role === 'admin';
+      
+      // HR Actions
+      case 'manage_leave_requests':
+        // HR department and managers
+        return user.department === 'Human Resource' || 
+               user.role === 'manager' || 
+               user.role === 'admin';
+      
+      case 'manage_employees':
+        // HR department and admins
+        return user.department === 'Human Resource' || user.role === 'admin';
+      
+      case 'view_hr_reports':
+        // HR, managers, admins, CEO
+        return user.department === 'Human Resource' || 
+               ['manager', 'ceo', 'admin'].includes(user.role);
+      
+      case 'approve_hr_requests':
+        // HR managers and admins
+        return (user.department === 'Human Resource' && user.role === 'manager') || 
+               user.role === 'admin';
+      
+      // Admin Actions
+      case 'manage_users':
+        // Only admins
+        return user.role === 'admin';
+      
+      case 'manage_departments':
+        // Only admins
+        return user.role === 'admin';
+      
+      case 'system_settings':
+        // Only admins
+        return user.role === 'admin';
+      
+      case 'view_all_reports':
+        // Managers, HR, Finance, CEOs, Admins
+        return ['manager', 'hr', 'finance', 'finance_manager', 'ceo', 'admin'].includes(user.role);
+      
+      default:
+        return false;
+    }
+  };
+
+  // NEW: Get department managers for a specific department
+  const getDepartmentManagers = async (): Promise<{department: Department, managers: UserData[]}> => {
+    try {
+      if (!user) throw new Error('User not authenticated');
+      
+      // Query for managers in the user's department
+      const usersRef = collection(db, 'users');
+      const q = query(
+        usersRef, 
+        where('department', '==', user.department),
+        where('role', '==', 'manager')
+      );
+      const snapshot = await getDocs(q);
+      
+      const managers: UserData[] = snapshot.docs.map(doc => ({
+        uid: doc.id,
+        ...doc.data()
+      } as UserData));
+      
+      return {
+        department: user.department,
+        managers
+      };
+    } catch (error) {
+      console.error('Error fetching department managers:', error);
+      throw error;
+    }
   };
 
   const value: AuthContextType = {
@@ -543,14 +728,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     login,
     logout,
     hasPermission,
+    hasDepartmentAccess,
     refreshToken,
     signUp,
     changePasswordOnFirstLogin,
-    changePassword, // Export this
+    changePassword,
     createUser,
     updateUser,
     sendPasswordResetEmail: sendPasswordResetEmailToUser,
-    updateUserRequiresPasswordChange // Export this
+    updateUserRequiresPasswordChange,
+    canPerformAction,
+    getDepartmentManagers
   };
 
   return (
@@ -567,4 +755,3 @@ export function useAuth() {
   }
   return context;
 }
-

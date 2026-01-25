@@ -14,7 +14,8 @@ import {
   XCircleIcon,
   ArrowRightOnRectangleIcon,
   ChevronLeftIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
+  ExclamationTriangleIcon
 } from '@heroicons/react/24/outline';
 import { 
   collection, 
@@ -24,7 +25,8 @@ import {
   doc, 
   getDoc, 
   updateDoc,
-  serverTimestamp
+  serverTimestamp,
+  Timestamp
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useEffect, useState } from 'react';
@@ -41,7 +43,9 @@ import {
   subMonths,
   isSameMonth,
   isSameDay,
-  parseISO
+  parseISO,
+  differenceInDays,
+  isPast
 } from 'date-fns';
 
 interface DashboardStats {
@@ -55,7 +59,7 @@ interface DashboardStats {
   leaveDaysEarned: number;
   pendingLeaveRequests: number;
   approvedLeaveRequests: number;
-  upcomingEvents: Event[];
+  upcomingEvents: CalendarEvent[];
   recentActivities: Activity[];
   hireDate?: any;
 }
@@ -68,27 +72,34 @@ interface CalendarEvent {
   user?: string;
 }
 
-interface Event {
-  id: string;
-  title: string;
-  date: Date;
-  type: 'meeting' | 'review' | 'training' | 'deadline';
-}
-
 interface Activity {
   id: string;
   action: string;
   date: Date;
-  type: 'leave' | 'payslip' | 'appraisal' | 'profile';
+  type: 'leave' | 'purchase_request' | 'appraisal' | 'profile';
   status: 'approved' | 'pending' | 'rejected' | 'completed';
+  details?: string;
 }
 
 interface LeaveRequest {
   id: string;
-  status: string;
   type: string;
   startDate: any;
   endDate: any;
+  status: string;
+  reason?: string;
+  employeeId: string;
+  employeeName: string;
+  department: string;
+  createdAt: any;
+}
+
+interface LeaveBalance {
+  annual: number;
+  sick: number;
+  personal: number;
+  unpaid: number;
+  updatedAt: string;
 }
 
 export default function DashboardPage() {
@@ -100,12 +111,25 @@ export default function DashboardPage() {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [calendarDays, setCalendarDays] = useState<Date[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [isOnline, setIsOnline] = useState(true);
+  const [teamStats, setTeamStats] = useState<{
+    teamPending: number;
+    teamOnLeave: number;
+    teamSize: number;
+  }>({ teamPending: 0, teamOnLeave: 0, teamSize: 0 });
 
   useEffect(() => {
-    if (user && userData) {
-      fetchDashboardData();
-    }
-  }, [user, userData]);
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   useEffect(() => {
     if (user && userData) {
@@ -139,8 +163,13 @@ export default function DashboardPage() {
               }
             }
           }
-        } catch (error) {
-          console.error('Error checking password change status:', error);
+        } catch (error: any) {
+          // Handle offline mode gracefully
+          if (error.code === 'unavailable' || error.code === 'failed-precondition') {
+            console.warn('Offline - skipping password change check');
+          } else {
+            console.error('Error checking password change status:', error);
+          }
         }
       };
       
@@ -177,18 +206,6 @@ export default function DashboardPage() {
     
     const events: CalendarEvent[] = [];
     
-    // Add upcoming events
-    if (stats?.upcomingEvents) {
-      stats.upcomingEvents.forEach(event => {
-        events.push({
-          id: event.id,
-          title: event.title,
-          date: event.date,
-          type: event.type
-        });
-      });
-    }
-
     // Fetch actual leave requests from Firestore
     try {
       const leaveRequestsRef = collection(db, 'leaveRequests');
@@ -200,15 +217,41 @@ export default function DashboardPage() {
       
       leaveRequestsSnap.forEach(doc => {
         const data = doc.data();
-        const startDate = data.startDate?.toDate();
-        const endDate = data.endDate?.toDate();
+        
+        // Convert startDate
+        let startDate: Date;
+        if (data.startDate?.toDate) {
+          startDate = data.startDate.toDate();
+        } else if (data.startDate instanceof Date) {
+          startDate = data.startDate;
+        } else if (typeof data.startDate === 'string') {
+          startDate = new Date(data.startDate);
+        } else if (data.startDate?.seconds) {
+          startDate = new Date(data.startDate.seconds * 1000);
+        } else {
+          return; // Skip if no valid startDate
+        }
+        
+        // Convert endDate
+        let endDate: Date;
+        if (data.endDate?.toDate) {
+          endDate = data.endDate.toDate();
+        } else if (data.endDate instanceof Date) {
+          endDate = data.endDate;
+        } else if (typeof data.endDate === 'string') {
+          endDate = new Date(data.endDate);
+        } else if (data.endDate?.seconds) {
+          endDate = new Date(data.endDate.seconds * 1000);
+        } else {
+          return; // Skip if no valid endDate
+        }
         
         if (startDate && endDate) {
           let currentDate = startDate;
           while (currentDate <= endDate) {
             events.push({
               id: `${doc.id}_${currentDate.getTime()}`,
-              title: `${data.type} Leave`,
+              title: `${data.type} Leave - ${data.employeeName || 'You'}`,
               date: new Date(currentDate),
               type: 'leave'
             });
@@ -219,28 +262,468 @@ export default function DashboardPage() {
 
       // Add team events for managers/admins
       if (userData?.role === 'manager' || userData?.role === 'admin') {
-        const teamEventsRef = collection(db, 'events');
-        const teamQ = query(teamEventsRef, 
-          where('date', '>=', startOfMonth(currentMonth)),
-          where('date', '<=', endOfMonth(currentMonth))
-        );
-        const teamEventsSnap = await getDocs(teamQ);
-        
-        teamEventsSnap.forEach(doc => {
-          const data = doc.data();
-          events.push({
-            id: doc.id,
-            title: data.title,
-            date: data.date?.toDate(),
-            type: data.type || 'meeting'
+        // Fetch team leave requests
+        if (userData?.department) {
+          const teamLeavesRef = collection(db, 'leaveRequests');
+          const teamQ = query(
+            teamLeavesRef, 
+            where('department', '==', userData.department),
+            where('status', '==', 'approved')
+          );
+          const teamLeavesSnap = await getDocs(teamQ);
+          
+          teamLeavesSnap.forEach(doc => {
+            const data = doc.data();
+            if (data.employeeId === user.uid) return; // Skip own leaves
+            
+            let startDate: Date;
+            if (data.startDate?.toDate) {
+              startDate = data.startDate.toDate();
+            } else if (data.startDate instanceof Date) {
+              startDate = data.startDate;
+            } else if (typeof data.startDate === 'string') {
+              startDate = new Date(data.startDate);
+            } else if (data.startDate?.seconds) {
+              startDate = new Date(data.startDate.seconds * 1000);
+            } else {
+              return;
+            }
+            
+            let endDate: Date;
+            if (data.endDate?.toDate) {
+              endDate = data.endDate.toDate();
+            } else if (data.endDate instanceof Date) {
+              endDate = data.endDate;
+            } else if (typeof data.endDate === 'string') {
+              endDate = new Date(data.endDate);
+            } else if (data.endDate?.seconds) {
+              endDate = new Date(data.endDate.seconds * 1000);
+            } else {
+              return;
+            }
+            
+            if (startDate && endDate) {
+              const today = new Date();
+              let currentDate = startDate;
+              while (currentDate <= endDate) {
+                if (currentDate >= today) {
+                  events.push({
+                    id: `${doc.id}_${currentDate.getTime()}_team`,
+                    title: `${data.type} Leave - ${data.employeeName}`,
+                    date: new Date(currentDate),
+                    type: 'leave',
+                    user: data.employeeName
+                  });
+                }
+                currentDate = addDays(currentDate, 1);
+              }
+            }
           });
-        });
+        }
       }
+
+      // Fetch upcoming meetings/events
+      const eventsRef = collection(db, 'events');
+      const now = new Date();
+      const nextMonth = addMonths(now, 1);
+      const upcomingQ = query(
+        eventsRef,
+        where('date', '>=', now),
+        where('date', '<=', nextMonth)
+      );
+      const eventsSnap = await getDocs(upcomingQ);
+      
+      eventsSnap.forEach(doc => {
+        const data = doc.data();
+        
+        let eventDate: Date;
+        if (data.date?.toDate) {
+          eventDate = data.date.toDate();
+        } else if (data.date instanceof Date) {
+          eventDate = data.date;
+        } else if (typeof data.date === 'string') {
+          eventDate = new Date(data.date);
+        } else if (data.date?.seconds) {
+          eventDate = new Date(data.date.seconds * 1000);
+        } else {
+          return;
+        }
+        
+        events.push({
+          id: doc.id,
+          title: data.title,
+          date: eventDate,
+          type: data.type || 'meeting'
+        });
+      });
+
     } catch (error) {
       console.error('Error loading calendar events:', error);
     }
 
     setCalendarEvents(events);
+  };
+
+  const fetchDashboardData = async () => {
+    if (!user) return;
+
+    setLoadingData(true);
+    
+    try {
+      // Fetch user's leave balance
+      const balanceRef = doc(db, 'leaveBalance', user.uid);
+      const balanceSnap = await getDoc(balanceRef);
+      
+      // Fetch user's leave requests
+      const leaveRequestsRef = collection(db, 'leaveRequests');
+      const leaveQ = query(leaveRequestsRef, where('employeeId', '==', user.uid));
+      const leaveRequestsSnap = await getDocs(leaveQ);
+      
+      // Fetch user details
+      const userRef = doc(db, 'users', user.uid);
+      const userDoc = await getDoc(userRef);
+      
+      // Initialize stats with defaults
+      let annualLeave = 15;
+      let sickLeave = 10;
+      let personalLeave = 5;
+      let usedAnnualLeave = 0;
+      let usedSickLeave = 0;
+      let usedPersonalLeave = 0;
+      let pendingLeaveRequests = 0;
+      let approvedLeaveRequests = 0;
+      let totalDaysWorked = 0;
+      let leaveDaysEarned = 0;
+      let hireDateValue: any = null;
+      
+      // Calculate leave balance
+      if (balanceSnap.exists()) {
+        const balanceData = balanceSnap.data();
+        annualLeave = balanceData.annual || 15;
+        sickLeave = balanceData.sick || 10;
+        personalLeave = balanceData.personal || 5;
+      }
+      
+      // Process leave requests
+      const leaveRequests: LeaveRequest[] = [];
+      leaveRequestsSnap.forEach(doc => {
+        const data = doc.data();
+        leaveRequests.push({ 
+          id: doc.id, 
+          ...data 
+        } as LeaveRequest);
+      });
+      
+      // Calculate used leave and counts
+      leaveRequests.forEach(req => {
+        if (req.status === 'pending') pendingLeaveRequests++;
+        if (req.status === 'approved') approvedLeaveRequests++;
+        
+        if (req.status === 'approved') {
+          let startDate: Date;
+          let endDate: Date;
+          
+          // Convert start date
+          if (req.startDate?.toDate) {
+            startDate = req.startDate.toDate();
+          } else if (req.startDate instanceof Date) {
+            startDate = req.startDate;
+          } else if (typeof req.startDate === 'string') {
+            startDate = new Date(req.startDate);
+          } else if (req.startDate?.seconds) {
+            startDate = new Date(req.startDate.seconds * 1000);
+          } else {
+            return;
+          }
+          
+          // Convert end date
+          if (req.endDate?.toDate) {
+            endDate = req.endDate.toDate();
+          } else if (req.endDate instanceof Date) {
+            endDate = req.endDate;
+          } else if (typeof req.endDate === 'string') {
+            endDate = new Date(req.endDate);
+          } else if (req.endDate?.seconds) {
+            endDate = new Date(req.endDate.seconds * 1000);
+          } else {
+            return;
+          }
+          
+          const days = differenceInDays(endDate, startDate) + 1;
+          
+          switch (req.type) {
+            case 'annual':
+              usedAnnualLeave += days;
+              break;
+            case 'sick':
+              usedSickLeave += days;
+              break;
+            case 'personal':
+              usedPersonalLeave += days;
+              break;
+          }
+        }
+      });
+      
+      // Calculate days worked based on hire date
+      if (userDoc.exists()) {
+        const userDocData = userDoc.data();
+        const hireDate = userDocData.hireDate || userDocData.createdAt;
+        
+        // Convert hire date
+        let hireDateObj: Date | null = null;
+        if (hireDate) {
+          if (typeof hireDate.toDate === 'function') {
+            hireDateObj = hireDate.toDate();
+          } else if (hireDate instanceof Date) {
+            hireDateObj = hireDate;
+          } else if (typeof hireDate === 'string') {
+            hireDateObj = new Date(hireDate);
+          } else if (hireDate?.seconds) {
+            hireDateObj = new Date(hireDate.seconds * 1000);
+          }
+        }
+        
+        if (hireDateObj && !isNaN(hireDateObj.getTime())) {
+          const now = new Date();
+          totalDaysWorked = Math.max(0, differenceInDays(now, hireDateObj));
+          // Calculate leave days earned (1 day per 2 weeks worked)
+          leaveDaysEarned = Math.floor(totalDaysWorked / 14);
+          hireDateValue = hireDate;
+        }
+      }
+      
+      // Fetch team stats for managers/admins
+      if (userData?.role === 'manager' || userData?.role === 'admin') {
+        await fetchTeamStats(userData.department);
+      }
+      
+      // Generate upcoming events from real data
+      const upcomingEvents = await generateUpcomingEvents();
+      
+      // Generate recent activities from real leave requests
+      const recentActivities = generateRecentActivities(leaveRequests);
+      
+      setStats({
+        annualLeave,
+        sickLeave,
+        personalLeave,
+        usedAnnualLeave,
+        usedSickLeave,
+        usedPersonalLeave,
+        totalDaysWorked,
+        leaveDaysEarned,
+        pendingLeaveRequests,
+        approvedLeaveRequests,
+        upcomingEvents,
+        recentActivities,
+        hireDate: hireDateValue
+      });
+
+    } catch (error: any) {
+      console.error('Error fetching dashboard data:', error);
+      
+      // Provide fallback data
+      setStats({
+        annualLeave: 15,
+        sickLeave: 10,
+        personalLeave: 5,
+        usedAnnualLeave: 0,
+        usedSickLeave: 0,
+        usedPersonalLeave: 0,
+        totalDaysWorked: 0,
+        leaveDaysEarned: 0,
+        pendingLeaveRequests: 0,
+        approvedLeaveRequests: 0,
+        upcomingEvents: [],
+        recentActivities: [],
+        hireDate: null
+      });
+    } finally {
+      setLoadingData(false);
+    }
+  };
+
+  const fetchTeamStats = async (department: string) => {
+    try {
+      // Fetch team members
+      const usersRef = collection(db, 'users');
+      const teamQ = query(usersRef, where('department', '==', department));
+      const teamSnap = await getDocs(teamQ);
+      const teamSize = teamSnap.size;
+      
+      // Fetch pending leave requests from team
+      const leaveRequestsRef = collection(db, 'leaveRequests');
+      const pendingQ = query(
+        leaveRequestsRef, 
+        where('department', '==', department),
+        where('status', '==', 'pending')
+      );
+      const pendingSnap = await getDocs(pendingQ);
+      const teamPending = pendingSnap.size;
+      
+      // Fetch current leave requests (approved and ongoing)
+      const today = new Date();
+      const leaveQ = query(
+        leaveRequestsRef,
+        where('department', '==', department),
+        where('status', '==', 'approved')
+      );
+      const leaveSnap = await getDocs(leaveQ);
+      
+      let teamOnLeave = 0;
+      leaveSnap.forEach(doc => {
+        const data = doc.data();
+        
+        let startDate: Date;
+        let endDate: Date;
+        
+        // Convert dates
+        if (data.startDate?.toDate) {
+          startDate = data.startDate.toDate();
+        } else if (data.startDate instanceof Date) {
+          startDate = data.startDate;
+        } else if (typeof data.startDate === 'string') {
+          startDate = new Date(data.startDate);
+        } else if (data.startDate?.seconds) {
+          startDate = new Date(data.startDate.seconds * 1000);
+        } else {
+          return;
+        }
+        
+        if (data.endDate?.toDate) {
+          endDate = data.endDate.toDate();
+        } else if (data.endDate instanceof Date) {
+          endDate = data.endDate;
+        } else if (typeof data.endDate === 'string') {
+          endDate = new Date(data.endDate);
+        } else if (data.endDate?.seconds) {
+          endDate = new Date(data.endDate.seconds * 1000);
+        } else {
+          return;
+        }
+        
+        if (startDate <= today && endDate >= today) {
+          teamOnLeave++;
+        }
+      });
+      
+      setTeamStats({ teamPending, teamOnLeave, teamSize });
+      
+    } catch (error) {
+      console.error('Error fetching team stats:', error);
+    }
+  };
+
+  const generateUpcomingEvents = async (): Promise<CalendarEvent[]> => {
+    const events: CalendarEvent[] = [];
+    
+    try {
+      // Fetch upcoming leave requests
+      const leaveRequestsRef = collection(db, 'leaveRequests');
+      const today = new Date();
+      const nextWeek = addDays(today, 7);
+      
+      const upcomingLeavesQ = query(
+        leaveRequestsRef,
+        where('employeeId', '==', user?.uid),
+        where('status', '==', 'approved'),
+        where('startDate', '>=', today),
+        where('startDate', '<=', nextWeek)
+      );
+      
+      const leavesSnap = await getDocs(upcomingLeavesQ);
+      
+      leavesSnap.forEach(doc => {
+        const data = doc.data();
+        
+        let startDate: Date;
+        if (data.startDate?.toDate) {
+          startDate = data.startDate.toDate();
+        } else if (data.startDate instanceof Date) {
+          startDate = data.startDate;
+        } else if (typeof data.startDate === 'string') {
+          startDate = new Date(data.startDate);
+        } else if (data.startDate?.seconds) {
+          startDate = new Date(data.startDate.seconds * 1000);
+        } else {
+          return;
+        }
+        
+        events.push({
+          id: doc.id,
+          title: `${data.type} Leave`,
+          date: startDate,
+          type: 'leave'
+        });
+      });
+      
+      // Add some default events if no real events
+      if (events.length === 0) {
+        events.push({
+          id: 'default1',
+          title: 'Team Meeting',
+          date: addDays(new Date(), 1),
+          type: 'meeting'
+        });
+        
+        if (userData?.role === 'manager' || userData?.role === 'admin') {
+          events.push({
+            id: 'default2',
+            title: 'Department Review',
+            date: addDays(new Date(), 3),
+            type: 'review'
+          });
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error generating upcoming events:', error);
+      
+      // Fallback events
+      events.push({
+        id: 'fallback1',
+        title: 'Monthly Review',
+        date: addDays(new Date(), 5),
+        type: 'review'
+      });
+    }
+    
+    return events.sort((a, b) => a.date.getTime() - b.date.getTime()).slice(0, 5);
+  };
+
+  const generateRecentActivities = (leaveRequests: LeaveRequest[]): Activity[] => {
+    const activities: Activity[] = [];
+    
+    // Add leave request activities
+    leaveRequests.slice(0, 5).forEach(req => {
+      let activityDate = new Date();
+      
+      // Try to get a valid date
+      if (req.createdAt) {
+        if (req.createdAt?.toDate) {
+          activityDate = req.createdAt.toDate();
+        } else if (req.createdAt instanceof Date) {
+          activityDate = req.createdAt;
+        } else if (typeof req.createdAt === 'string') {
+          activityDate = new Date(req.createdAt);
+        } else if (req.createdAt?.seconds) {
+          activityDate = new Date(req.createdAt.seconds * 1000);
+        }
+      }
+      
+      activities.push({
+        id: req.id,
+        action: `${req.type.charAt(0).toUpperCase() + req.type.slice(1)} Leave`,
+        date: activityDate,
+        type: 'leave',
+        status: req.status as any,
+        details: req.reason ? `Reason: ${req.reason.substring(0, 30)}...` : undefined
+      });
+    });
+    
+    // Sort by date (newest first)
+    return activities.sort((a, b) => b.date.getTime() - a.date.getTime());
   };
 
   const handleLogout = async () => {
@@ -255,260 +738,6 @@ export default function DashboardPage() {
     }
   };
 
-  const fetchDashboardData = async () => {
-    if (!user) return;
-
-    try {
-      const calculateAutomaticLeave = async (userId: string) => {
-        try {
-          const userRef = doc(db, 'users', userId);
-          const balanceRef = doc(db, 'leaveBalance', userId);
-          
-          const [userSnap, balanceSnap] = await Promise.all([
-            getDoc(userRef),
-            getDoc(balanceRef)
-          ]);
-          
-          if (!userSnap.exists() || !balanceSnap.exists()) {
-            return;
-          }
-          
-          const userData = userSnap.data();
-          const balanceData = balanceSnap.data();
-          
-          let hireDate: Date | null = null;
-          
-          if (userData.hireDate) {
-            if (userData.hireDate.toDate) {
-              hireDate = userData.hireDate.toDate();
-            } else if (userData.hireDate instanceof Date) {
-              hireDate = userData.hireDate;
-            } else if (typeof userData.hireDate === 'string') {
-              hireDate = new Date(userData.hireDate);
-            } else if (userData.hireDate.seconds) {
-              hireDate = new Date(userData.hireDate.seconds * 1000);
-            }
-          }
-          
-          if (!hireDate || isNaN(hireDate.getTime())) {
-            return;
-          }
-          
-          const now = new Date();
-          const timeDiff = now.getTime() - hireDate.getTime();
-          const daysSinceHire = Math.floor(timeDiff / (1000 * 3600 * 24));
-          const leaveDaysEarned = Math.floor(daysSinceHire / 2);
-          
-          const annualLeave = Math.floor(leaveDaysEarned * 0.6);
-          const sickLeave = Math.floor(leaveDaysEarned * 0.3);
-          const personalLeave = leaveDaysEarned - annualLeave - sickLeave;
-          
-          const daysAlreadyAccounted = balanceData.totalDaysAccounted || 0;
-          
-          if (daysSinceHire > daysAlreadyAccounted) {
-            await updateDoc(balanceRef, {
-              annual: annualLeave,
-              sick: sickLeave,
-              personal: personalLeave,
-              totalDaysAccounted: daysSinceHire,
-              lastAutoUpdate: serverTimestamp(),
-              lastUpdated: serverTimestamp()
-            });
-          }
-        } catch (error) {
-          console.error('Auto leave calculation error:', error);
-        }
-      };
-
-      await calculateAutomaticLeave(user.uid);
-      
-      const balanceRef = doc(db, 'leaveBalance', user.uid);
-      const balanceSnap = await getDoc(balanceRef);
-      
-      const leaveRequestsRef = collection(db, 'leaveRequests');
-      const q = query(leaveRequestsRef, where('employeeId', '==', user.uid));
-      const leaveRequestsSnap = await getDocs(q);
-      
-      const leaveRequests: LeaveRequest[] = [];
-      leaveRequestsSnap.forEach(doc => {
-        leaveRequests.push({ id: doc.id, ...doc.data() } as LeaveRequest);
-      });
-
-      let annualLeave = 0;
-      let sickLeave = 0;
-      let personalLeave = 0;
-      let daysSinceHire = 0;
-      
-      if (balanceSnap.exists()) {
-        const balanceData = balanceSnap.data();
-        annualLeave = balanceData.annual || 0;
-        sickLeave = balanceData.sick || 0;
-        personalLeave = balanceData.personal || 0;
-      }
-      
-      const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        const hireDate = userData.hireDate?.toDate() || userData.createdAt?.toDate();
-        if (hireDate) {
-          const now = new Date();
-          const timeDiff = now.getTime() - hireDate.getTime();
-          daysSinceHire = Math.floor(timeDiff / (1000 * 3600 * 24));
-        }
-      }
-      
-      const pendingRequests = leaveRequests.filter(req => req.status === 'pending').length;
-      const approvedRequests = leaveRequests.filter(req => req.status === 'approved').length;
-      
-      const usedAnnualLeave = leaveRequests
-        .filter(req => req.status === 'approved' && req.type === 'annual')
-        .reduce((total, req) => {
-          const days = Math.ceil((req.endDate.toDate() - req.startDate.toDate()) / (1000 * 60 * 60 * 24)) + 1;
-          return total + days;
-        }, 0);
-
-      const usedSickLeave = leaveRequests
-        .filter(req => req.status === 'approved' && req.type === 'sick')
-        .reduce((total, req) => {
-          const days = Math.ceil((req.endDate.toDate() - req.startDate.toDate()) / (1000 * 60 * 60 * 24)) + 1;
-          return total + days;
-        }, 0);
-
-      const usedPersonalLeave = leaveRequests
-        .filter(req => req.status === 'approved' && req.type === 'personal')
-        .reduce((total, req) => {
-          const days = Math.ceil((req.endDate.toDate() - req.startDate.toDate()) / (1000 * 60 * 60 * 24)) + 1;
-          return total + days;
-        }, 0);
-
-      const upcomingEvents = generateUpcomingEvents(userData?.role || 'employee');
-      const recentActivities = generateRecentActivities(leaveRequests, userData);
-
-      setStats({
-        annualLeave: annualLeave - usedAnnualLeave,
-        sickLeave: sickLeave - usedSickLeave,
-        personalLeave: personalLeave - usedPersonalLeave,
-        usedAnnualLeave,
-        usedSickLeave,
-        usedPersonalLeave,
-        totalDaysWorked: daysSinceHire,
-        leaveDaysEarned: Math.floor(daysSinceHire / 2),
-        pendingLeaveRequests: pendingRequests,
-        approvedLeaveRequests: approvedRequests,
-        upcomingEvents,
-        recentActivities,
-        hireDate: userDoc.data()?.hireDate || userDoc.data()?.createdAt
-      });
-    } catch (error) {
-      console.error('Error fetching dashboard data:', error);
-      setStats({
-        annualLeave: 0,
-        sickLeave: 0,
-        personalLeave: 0,
-        usedAnnualLeave: 0,
-        usedSickLeave: 0,
-        usedPersonalLeave: 0,
-        totalDaysWorked: 0,
-        leaveDaysEarned: 0,
-        pendingLeaveRequests: 0,
-        approvedLeaveRequests: 0,
-        upcomingEvents: generateUpcomingEvents(userData?.role || 'employee'),
-        recentActivities: [],
-        hireDate: null
-      });
-    } finally {
-      setLoadingData(false);
-    }
-  };
-
-  const generateUpcomingEvents = (role: string): Event[] => {
-    const baseEvents = [
-      {
-        id: '1',
-        title: 'Team Meeting',
-        date: addDays(new Date(), 1),
-        type: 'meeting' as const
-      },
-      {
-        id: '2',
-        title: 'Monthly Review',
-        date: addDays(new Date(), 7),
-        type: 'review' as const
-      }
-    ];
-
-    if (role === 'employee') {
-      return [
-        ...baseEvents,
-        {
-          id: '3',
-          title: 'Training Session',
-          date: addDays(new Date(), 14),
-          type: 'training' as const
-        }
-      ];
-    } else if (role === 'manager') {
-      return [
-        ...baseEvents,
-        {
-          id: '3',
-          title: 'Budget Planning',
-          date: addDays(new Date(), 3),
-          type: 'meeting' as const
-        },
-        {
-          id: '4',
-          title: 'Team Appraisals',
-          date: addDays(new Date(), 10),
-          type: 'review' as const
-        }
-      ];
-    } else {
-      return [
-        ...baseEvents,
-        {
-          id: '3',
-          title: 'Board Meeting',
-          date: addDays(new Date(), 2),
-          type: 'meeting' as const
-        },
-        {
-          id: '4',
-          title: 'Quarterly Planning',
-          date: addDays(new Date(), 5),
-          type: 'deadline' as const
-        }
-      ];
-    }
-  };
-
-  const generateRecentActivities = (leaveRequests: LeaveRequest[], userData: any): Activity[] => {
-    const activities: Activity[] = [];
-
-    leaveRequests.slice(0, 3).forEach(req => {
-      activities.push({
-        id: req.id,
-        action: `${req.type.charAt(0).toUpperCase() + req.type.slice(1)} Leave ${req.status}`,
-        date: req.startDate?.toDate() || new Date(),
-        type: 'leave' as const,
-        status: req.status as any
-      });
-    });
-
-    if (userData?.lastPayslip) {
-      activities.push({
-        id: 'payslip',
-        action: 'Payslip Generated',
-        date: userData.lastPayslip.toDate(),
-        type: 'payslip',
-        status: 'completed'
-      });
-    }
-
-    return activities.sort((a, b) => b.date.getTime() - a.date.getTime()).slice(0, 5);
-  };
-
   const getRoleBasedStats = () => {
     const baseStats = [
       { 
@@ -516,7 +745,7 @@ export default function DashboardPage() {
         value: `${stats?.annualLeave || 15}`, 
         icon: CalendarDaysIcon, 
         color: 'bg-gradient-to-br from-green-500 to-emerald-600',
-        subtext: `${stats?.usedAnnualLeave || 5} days used`
+        subtext: `${stats?.usedAnnualLeave || 0} days used`
       },
       { 
         name: 'Sick Leave', 
@@ -524,70 +753,50 @@ export default function DashboardPage() {
         icon: CalendarDaysIcon, 
         color: 'bg-gradient-to-br from-yellow-500 to-amber-600',
         subtext: `${stats?.usedSickLeave || 0} days used`
+      },
+      { 
+        name: 'Pending', 
+        value: `${stats?.pendingLeaveRequests || 0}`, 
+        icon: ClockIcon, 
+        color: 'bg-gradient-to-br from-blue-500 to-indigo-600',
+        subtext: 'Awaiting review'
+      },
+      { 
+        name: 'Approved', 
+        value: `${stats?.approvedLeaveRequests || 0}`, 
+        icon: CheckCircleIcon, 
+        color: 'bg-gradient-to-br from-purple-500 to-violet-600',
+        subtext: 'This year'
       }
     ];
 
-    if (userData?.role === 'employee') {
+    if (userData?.role === 'manager' || userData?.role === 'admin') {
       return [
-        ...baseStats,
-        { 
-          name: 'Pending', 
-          value: `${stats?.pendingLeaveRequests || 0}`, 
-          icon: ClockIcon, 
-          color: 'bg-gradient-to-br from-blue-500 to-indigo-600',
-          subtext: 'Awaiting review'
-        },
-        { 
-          name: 'Approved', 
-          value: `${stats?.approvedLeaveRequests || 0}`, 
-          icon: CheckCircleIcon, 
-          color: 'bg-gradient-to-br from-purple-500 to-violet-600',
-          subtext: 'This year'
-        }
-      ];
-    } else if (userData?.role === 'manager') {
-      return [
-        ...baseStats,
+        ...baseStats.slice(0, 2),
         { 
           name: 'Team Pending', 
-          value: '8', 
+          value: `${teamStats.teamPending}`, 
           icon: UserGroupIcon, 
           color: 'bg-gradient-to-br from-blue-500 to-indigo-600',
           subtext: 'To review'
         },
         { 
           name: 'Team On Leave', 
-          value: '3', 
+          value: `${teamStats.teamOnLeave}`, 
           icon: CalendarDaysIcon, 
           color: 'bg-gradient-to-br from-red-500 to-pink-600',
           subtext: 'Currently out'
         }
       ];
-    } else {
-      return [
-        ...baseStats,
-        { 
-          name: 'Employees', 
-          value: '47', 
-          icon: UserGroupIcon, 
-          color: 'bg-gradient-to-br from-blue-500 to-indigo-600',
-          subtext: 'Active'
-        },
-        { 
-          name: 'Pending', 
-          value: '12', 
-          icon: DocumentTextIcon, 
-          color: 'bg-gradient-to-br from-purple-500 to-violet-600',
-          subtext: 'Across teams'
-        }
-      ];
     }
+
+    return baseStats;
   };
 
   const getRoleBasedQuickActions = () => {
     const baseActions = [
       { name: 'Leaves', href: '/leave', description: 'Submit new leave request', color: 'bg-blue-100 text-blue-600' },
-      { name: 'Payslips', href: '/payslips', description: 'View salary documents', color: 'bg-green-100 text-green-600' },
+      { name: 'Purchase Requests', href: '/purchase-requests', description: 'View purchase requests', color: 'bg-green-100 text-green-600' },
     ];
 
     if (userData?.role === 'employee') {
@@ -700,7 +909,7 @@ export default function DashboardPage() {
           </h2>
         </div>
 
-        {/* Stats Grid - More compact */}
+        {/* Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           {statsData.map((stat) => {
             const Icon = stat.icon;
@@ -713,6 +922,11 @@ export default function DashboardPage() {
                   <div className={`p-2 rounded-lg ${stat.color}`}>
                     <Icon className="h-5 w-5 text-white" />
                   </div>
+                  {stat.name.includes('Team') && teamStats.teamSize > 0 && (
+                    <span className="text-xs text-gray-500">
+                      Team: {teamStats.teamSize}
+                    </span>
+                  )}
                 </div>
                 <p className="mt-3 text-2xl font-bold text-gray-900">{stat.value}</p>
                 <p className="mt-1 text-sm font-medium text-gray-500">{stat.name}</p>
@@ -723,10 +937,9 @@ export default function DashboardPage() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left Column: Calendar - Takes 2/3 on desktop, full width on mobile */}
+          {/* Calendar Section */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-              {/* Calendar Header */}
               <div className="p-4 border-b border-gray-200">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-semibold text-gray-900">Calendar</h2>
@@ -750,18 +963,15 @@ export default function DashboardPage() {
                 </div>
               </div>
 
-              {/* Calendar Grid */}
               <div className="p-4">
-                {/* Weekday Headers - Responsive */}
                 <div className="grid grid-cols-7 gap-1 mb-2">
-                  {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day) => (
+                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
                     <div key={day} className="text-center">
                       <span className="text-xs font-medium text-gray-500">{day}</span>
                     </div>
                   ))}
                 </div>
 
-                {/* Calendar Days */}
                 <div className="grid grid-cols-7 gap-1">
                   {calendarDays.map((day, dayIdx) => {
                     const dayEvents = calendarEvents.filter(event => 
@@ -791,7 +1001,6 @@ export default function DashboardPage() {
                             )}
                           </div>
                           
-                          {/* Events for the day */}
                           <div className="flex-1 space-y-0.5 overflow-y-auto">
                             {dayEvents.slice(0, 3).map((event) => (
                               <div
@@ -815,7 +1024,6 @@ export default function DashboardPage() {
                   })}
                 </div>
 
-                {/* Legend - More compact */}
                 <div className="mt-4 pt-4 border-t border-gray-200">
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div className="flex items-center">
@@ -840,9 +1048,9 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Right Column: Quick Actions and Upcoming Events */}
+          {/* Right Column */}
           <div className="space-y-6">
-            {/* Quick Actions - More compact */}
+            {/* Quick Actions */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
               <h2 className="text-lg font-semibold text-gray-900 mb-3">Quick Actions</h2>
               <div className="grid grid-cols-1 gap-2">
@@ -868,7 +1076,19 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Upcoming Events - More compact */}
+            {/* Offline Indicator */}
+            {!isOnline && (
+              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4">
+                <div className="flex items-center">
+                  <ExclamationTriangleIcon className="h-5 w-5 text-yellow-400" />
+                  <p className="ml-3 text-sm text-yellow-700">
+                    You're currently offline. Some features may be limited.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Upcoming Events */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
               <h2 className="text-lg font-semibold text-gray-900 mb-3">Upcoming Events</h2>
               <div className="space-y-3">
@@ -884,7 +1104,7 @@ export default function DashboardPage() {
                         {event.type === 'meeting' && <UserGroupIcon className="w-4 h-4" />}
                         {event.type === 'review' && <ArrowTrendingUpIcon className="w-4 h-4" />}
                         {event.type === 'training' && <ChartBarIcon className="w-4 h-4" />}
-                        {event.type === 'deadline' && <ClockIcon className="w-4 h-4" />}
+                        {event.type === 'leave' && <CalendarDaysIcon className="w-4 h-4" />}
                       </div>
                       <div className="flex-1 min-w-0">
                         <h3 className="text-sm font-medium text-gray-900 truncate">{event.title}</h3>
@@ -898,16 +1118,19 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 ))}
+                {(!stats?.upcomingEvents || stats.upcomingEvents.length === 0) && (
+                  <p className="text-sm text-gray-500 text-center py-2">No upcoming events</p>
+                )}
               </div>
             </div>
-
-            <FirstLoginPasswordChangeModal 
-              isOpen={showPasswordModal}
-              onClose={handlePasswordModalClose}
-            />
           </div>
         </div>
       </div>
+
+      <FirstLoginPasswordChangeModal 
+        isOpen={showPasswordModal}
+        onClose={handlePasswordModalClose}
+      />
     </div>
   );
 }

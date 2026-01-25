@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
-import { useAuth } from '@/lib/auth-context';
+import { Department, useAuth } from '@/lib/auth-context';
 import { collection, getDocs, deleteDoc, doc, query, where, orderBy, limit, startAfter, getCountFromServer } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { UserRole } from '@/lib/auth-context';
@@ -22,7 +22,7 @@ interface FirestoreUser {
   email: string;
   displayName: string;
   role: UserRole;
-  department?: string;
+  department?: Department;
   position?: string;
   createdAt?: any;
   lastLogin?: any;
@@ -60,14 +60,14 @@ export default function AdminUsersPage() {
   const [showFilters, setShowFilters] = useState(false);
 
   // Form state for creating/editing users
-  const [formData, setFormData] = useState({
-    email: '',
-    displayName: '',
-    role: 'employee' as UserRole,
-    department: '',
-    position: '',
-    temporaryPassword: 'ChangeMe123!'
-  });
+ const [formData, setFormData] = useState({
+  email: '',
+  displayName: '',
+  role: 'employee' as UserRole,
+  department: 'General' as Department, // Set default as Department type
+  position: '',
+  temporaryPassword: 'ChangeMe123!'
+});
 
   useEffect(() => {
     if (user && user.role !== 'admin') {
@@ -213,7 +213,7 @@ export default function AdminUsersPage() {
       email: user.email,
       displayName: user.displayName,
       role: user.role,
-      department: user.department || '',
+      department: user.department || 'General',
       position: user.position || '',
       temporaryPassword: ''
     });
@@ -225,7 +225,7 @@ export default function AdminUsersPage() {
       email: '',
       displayName: '',
       role: 'employee',
-      department: '',
+      department: 'General' as Department,
       position: '',
       temporaryPassword: 'ChangeMe123!'
     });
@@ -847,15 +847,21 @@ export default function AdminUsersPage() {
                     </div>
                     <div>
                       <label htmlFor="department" className="block text-sm font-medium text-gray-700">
-                        Department
+                        Department *
                       </label>
-                      <input
-                        type="text"
+                      <select
                         id="department"
+                        required
                         value={formData.department}
-                        onChange={(e) => setFormData({...formData, department: e.target.value})}
+                        onChange={(e) => setFormData({...formData, department: e.target.value as Department})}
                         className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                      />
+                      >
+                        <option value="Finance/Admin">Finance/Admin</option>
+                        <option value="Human Resource">Human Resource</option>
+                        <option value="Procurement/Logistics">Procurement/Logistics</option>
+                        <option value="Marketing and Sales">Marketing and Sales</option>
+                        <option value="General">General</option>
+                      </select>
                     </div>
                     <div>
                       <label htmlFor="position" className="block text-sm font-medium text-gray-700">
@@ -958,17 +964,23 @@ export default function AdminUsersPage() {
                       </select>
                     </div>
                     <div>
-                      <label htmlFor="editDepartment" className="block text-sm font-medium text-gray-700">
-                        Department
-                      </label>
-                      <input
-                        type="text"
-                        id="editDepartment"
-                        value={formData.department}
-                        onChange={(e) => setFormData({...formData, department: e.target.value})}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                      />
-                    </div>
+                        <label htmlFor="editDepartment" className="block text-sm font-medium text-gray-700">
+                          Department *
+                        </label>
+                        <select
+                          id="editDepartment"
+                          required
+                          value={formData.department}
+                          onChange={(e) => setFormData({...formData, department: e.target.value as Department})}
+                          className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        >
+                          <option value="Finance/Admin">Finance/Admin</option>
+                          <option value="Human Resource">Human Resource</option>
+                          <option value="Procurement/Logistics">Procurement/Logistics</option>
+                          <option value="Marketing and Sales">Marketing and Sales</option>
+                          <option value="General">General</option>
+                        </select>
+                      </div>
                     <div>
                       <label htmlFor="editPosition" className="block text-sm font-medium text-gray-700">
                         Position

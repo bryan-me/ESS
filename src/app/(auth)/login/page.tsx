@@ -129,7 +129,7 @@ export default function LoginPage() {
           </div>
           
           <div className="text-center text-sm text-gray-500 pt-4 border-t border-gray-200">
-            <p>Demo credentials: <span className="font-medium">admin@company.com</span> / <span className="font-medium">password123</span></p>
+            <p><li>Powered By </li><span className="font-medium"><b>Quadrah</b></span></p>
           </div>
         </form>
       </div>

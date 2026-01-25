@@ -1,12 +1,43 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useCollection } from 'react-firebase-hooks/firestore';
-import { collection, addDoc, query, where, orderBy, doc, updateDoc, increment, getDoc, setDoc } from 'firebase/firestore';
+import { collection, addDoc, query, where, orderBy, doc, updateDoc, increment, getDoc, setDoc, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/lib/auth-context';
-import { format, isPast, parseISO, isToday, startOfMonth, endOfMonth, addMonths, subMonths } from 'date-fns';
+import { format, isPast, parseISO, isToday, startOfMonth, endOfMonth, addMonths, subMonths, isWithinInterval, isSameDay, eachDayOfInterval, addDays, parse } from 'date-fns';
 import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
+
+interface LeaveRequest {
+  id: string;
+  type: string;
+  startDate: any;
+  endDate: any;
+  days: number;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  employeeId: string;
+  employeeName: string;
+  employeeEmail: string;
+  department: string;
+  createdAt: any;
+  updatedAt: any;
+  reviewedBy?: string;
+  reviewedByName?: string;
+  reviewedAt?: any;
+  cancelledBy?: string;
+  cancelledAt?: any;
+}
+
+type LeaveBalanceType = 'annual' | 'sick' | 'maternity' | 'unpaid';
+
+interface LeaveBalance {
+  annual: number;
+  sick: number;
+  maternity: number;
+  unpaid: number;
+  updatedAt: string;
+}
 
 // Helper function to calculate business days
 const calculateBusinessDays = (startDate: string, endDate: string) => {
@@ -30,6 +61,12 @@ interface CalendarDay {
   events: any[];
 }
 
+interface BlockedDate {
+  date: Date;
+  reason: string;
+  employeeName: string;
+}
+
 export default function LeavePage() {
   const { user, loading: authLoading } = useAuth();
   const [showModal, setShowModal] = useState(false);
@@ -43,9 +80,13 @@ export default function LeavePage() {
   const [dataInitialized, setDataInitialized] = useState(false);
   const [activeView, setActiveView] = useState<'list' | 'calendar'>('list');
   const [currentMonth, setCurrentMonth] = useState(new Date());
+  const [blockedDates, setBlockedDates] = useState<BlockedDate[]>([]);
+  const [departmentLeaves, setDepartmentLeaves] = useState<LeaveRequest[]>([]);
+
 
   // Access role from user object
   const role = user?.role || 'employee';
+  const userDepartment = user?.department || '';
 
   // Fetch leave balance from Firestore
   const leaveBalanceRef = user?.uid ? doc(db, 'leaveBalance', user.uid) : null;
@@ -66,6 +107,65 @@ export default function LeavePage() {
   );
   
   const [leaveRequestsSnapshot, requestsLoading, requestsError] = useCollection(leaveRequestsQuery);
+
+  // Fetch all leave requests in the same department (excluding current user's cancelled/rejected leaves)
+  useEffect(() => {
+    const fetchDepartmentLeaves = async () => {
+      if (user?.uid && userDepartment) {
+        try {
+          // Fetch approved and pending leaves in the same department (excluding current user's leaves)
+          const q = query(
+            collection(db, 'leaveRequests'),
+            where('department', '==', userDepartment),
+            where('status', 'in', ['approved', 'pending'])
+          );
+          
+          const querySnapshot = await getDocs(q);
+         // In the fetchDepartmentLeaves useEffect, update the mapping:
+          const leaves = querySnapshot.docs
+            .map(doc => ({
+              id: doc.id,
+              ...doc.data()
+            } as LeaveRequest))
+            .filter(leave => leave.employeeId !== user.uid); // Exclude current user's own leaves
+          
+          setDepartmentLeaves(leaves);
+
+          // Calculate blocked dates
+          const blocked: BlockedDate[] = [];
+          leaves.forEach((leave: any) => {
+            if (leave.startDate && leave.endDate) {
+              const start = parseISO(leave.startDate);
+              const end = parseISO(leave.endDate);
+              
+              // Create array of all days in the leave interval
+              const daysInLeave = eachDayOfInterval({ start, end });
+              
+              daysInLeave.forEach(day => {
+                // Check if day is a business day (Monday to Friday)
+                const dayOfWeek = day.getDay();
+                if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+                  blocked.push({
+                    date: day,
+                    reason: `${leave.type} leave`,
+                    employeeName: leave.employeeName
+                  });
+                }
+              });
+            }
+          });
+          
+          setBlockedDates(blocked);
+        } catch (error) {
+          console.error('Error fetching department leaves:', error);
+        }
+      }
+    };
+
+    if (userDepartment && user?.uid) {
+      fetchDepartmentLeaves();
+    }
+  }, [userDepartment, user?.uid]);
 
   // Initialize leave balance if it doesn't exist
   useEffect(() => {
@@ -93,13 +193,14 @@ export default function LeavePage() {
   }, [user?.uid, balanceLoading, dataInitialized]);
 
   // Get leave balance data
-  const leaveBalance = leaveBalanceSnapshot?.docs?.[0]?.data();
+  const leaveBalance = leaveBalanceSnapshot?.docs?.[0]?.data() as LeaveBalance | undefined;
+
   
   // Get leave requests data
-  const leaveRequests = leaveRequestsSnapshot?.docs.map(doc => ({
-    id: doc.id,
-    ...doc.data()
-  })) || [];
+ const leaveRequests = leaveRequestsSnapshot?.docs.map(doc => ({
+  id: doc.id,
+  ...doc.data()
+} as LeaveRequest)) || [];
 
   // Fetch all pending leave requests for managers/admins
   const allLeaveRequestsQuery = (role === 'manager' || role === 'admin') && user?.uid
@@ -112,10 +213,77 @@ export default function LeavePage() {
 
   const [allLeaveRequestsSnapshot, allRequestsLoading] = useCollection(allLeaveRequestsQuery);
   
-  const allLeaveRequests = allLeaveRequestsSnapshot?.docs.map(doc => ({
-    id: doc.id,
-    ...doc.data()
-  })) || [];
+ const allLeaveRequests = allLeaveRequestsSnapshot?.docs.map(doc => ({
+  id: doc.id,
+  ...doc.data()
+} as LeaveRequest)) || [];
+
+  // Check if selected dates overlap with existing department leaves
+  const checkDateAvailability = (startDate: string, endDate: string): { available: boolean; conflicts: LeaveRequest[] } => {
+  if (!startDate || !endDate || !userDepartment) {
+    return { available: true, conflicts: [] };
+  }
+
+  const selectedStart = parseISO(startDate);
+  const selectedEnd = parseISO(endDate);
+  
+  const conflicts = departmentLeaves.filter((leave: LeaveRequest) => {
+    if (!leave.startDate || !leave.endDate) return false;
+    
+    const leaveStart = parseISO(leave.startDate);
+    const leaveEnd = parseISO(leave.endDate);
+    
+    // Check if date ranges overlap
+    return (
+      (selectedStart >= leaveStart && selectedStart <= leaveEnd) ||
+      (selectedEnd >= leaveStart && selectedEnd <= leaveEnd) ||
+      (leaveStart >= selectedStart && leaveStart <= selectedEnd) ||
+      (leaveEnd >= selectedStart && leaveEnd <= selectedEnd)
+    );
+  });
+
+  return {
+    available: conflicts.length === 0,
+    conflicts
+  };
+};
+
+  // Check if a specific date is blocked
+  const isDateBlocked = (date: Date): { blocked: boolean; reason?: string; employeeName?: string } => {
+    const dayOfWeek = date.getDay();
+    // Weekends are not selectable for business days
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      return { blocked: true, reason: 'Weekend' };
+    }
+
+    const blockedDate = blockedDates.find(blocked => 
+      isSameDay(blocked.date, date)
+    );
+    
+    if (blockedDate) {
+      return {
+        blocked: true,
+        reason: `${blockedDate.reason} (taken by ${blockedDate.employeeName})`,
+        employeeName: blockedDate.employeeName
+      };
+    }
+    
+    return { blocked: false };
+  };
+
+  // Get minimum selectable date (tomorrow or next business day)
+  const getMinSelectableDate = (): string => {
+    const today = new Date();
+    const tomorrow = addDays(today, 1);
+    
+    // If tomorrow is weekend, skip to next Monday
+    let nextBusinessDay = tomorrow;
+    while (nextBusinessDay.getDay() === 0 || nextBusinessDay.getDay() === 6) {
+      nextBusinessDay = addDays(nextBusinessDay, 1);
+    }
+    
+    return format(nextBusinessDay, 'yyyy-MM-dd');
+  };
 
   // Calendar generation
   const generateCalendarDays = (): CalendarDay[] => {
@@ -161,59 +329,86 @@ export default function LeavePage() {
   const calendarDays = generateCalendarDays();
 
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  e.preventDefault();
+  
+  if (!user?.uid || !formData.startDate || !formData.endDate || !formData.reason) {
+    alert('Please fill in all fields');
+    return;
+  }
+  
+  setLoading(true);
+  
+  try {
+    const days = calculateBusinessDays(formData.startDate, formData.endDate);
     
-    if (!user?.uid || !formData.startDate || !formData.endDate || !formData.reason) {
-      alert('Please fill in all fields');
+    if (isPast(parseISO(formData.startDate))) {
+      alert('Cannot apply for leave with a start date in the past');
+      setLoading(false);
       return;
     }
     
-    setLoading(true);
-    
-    try {
-      const days = calculateBusinessDays(formData.startDate, formData.endDate);
-      
-      if (isPast(parseISO(formData.startDate))) {
-        alert('Cannot apply for leave with a start date in the past');
-        setLoading(false);
-        return;
-      }
-      
-      const currentBalance = leaveBalance?.[formData.type as keyof typeof leaveBalance] || 0;
-      if (formData.type !== 'unpaid' && days > currentBalance) {
-        alert('Insufficient leave balance');
-        setLoading(false);
-        return;
-      }
-
-      const newRequest = {
-        type: formData.type,
-        startDate: formData.startDate,
-        endDate: formData.endDate,
-        days,
-        reason: formData.reason,
-        status: 'pending',
-        employeeId: user.uid,
-        employeeName: user?.displayName || user?.email?.split('@')[0] || 'Employee',
-        employeeEmail: user?.email,
-        department: user?.department || '',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      
-      await addDoc(collection(db, 'leaveRequests'), newRequest);
-      
-      setShowModal(false);
-      setFormData({ type: 'annual', startDate: '', endDate: '', reason: '' });
-      
-      alert('Leave request submitted successfully! It will be reviewed by management.');
-      
-    } catch (error) {
-      console.error('Error submitting leave request:', error);
-      alert('Failed to submit leave request. Please try again.');
-    } finally {
+    // Check for date conflicts
+    const { available, conflicts } = checkDateAvailability(formData.startDate, formData.endDate);
+    if (!available) {
+      alert(`Cannot apply for leave. The selected dates overlap with existing leaves in your department:\n\n${
+        conflicts.map((conflict: LeaveRequest) => 
+          `${conflict.employeeName}: ${conflict.type} leave (${format(parseISO(conflict.startDate), 'MMM dd')} - ${format(parseISO(conflict.endDate), 'MMM dd')})`
+        ).join('\n')
+      }`);
       setLoading(false);
+      return;
     }
+    
+    // Type-safe balance check
+    const currentBalance = leaveBalance?.[formData.type as LeaveBalanceType];
+    if (formData.type !== 'unpaid' && currentBalance !== undefined && days > currentBalance) {
+      alert('Insufficient leave balance');
+      setLoading(false);
+      return;
+    }
+
+    const newRequest: Omit<LeaveRequest, 'id'> = {
+      type: formData.type,
+      startDate: formData.startDate,
+      endDate: formData.endDate,
+      days,
+      reason: formData.reason,
+      status: 'pending',
+      employeeId: user.uid,
+      employeeName: user?.displayName || user?.email?.split('@')[0] || 'Employee',
+      employeeEmail: user?.email || '',
+      department: user?.department || '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    await addDoc(collection(db, 'leaveRequests'), newRequest);
+    
+    setShowModal(false);
+    setFormData({ type: 'annual', startDate: '', endDate: '', reason: '' });
+    
+    alert('Leave request submitted successfully! It will be reviewed by management.');
+    
+  } catch (error) {
+    console.error('Error submitting leave request:', error);
+    alert('Failed to submit leave request. Please try again.');
+  } finally {
+    setLoading(false);
+  }
+};
+
+  // Handle date change with validation
+  const handleStartDateChange = (date: string) => {
+    setFormData(prev => ({ ...prev, startDate: date }));
+    
+    // If end date is before start date, reset end date
+    if (formData.endDate && date > formData.endDate) {
+      setFormData(prev => ({ ...prev, endDate: '' }));
+    }
+  };
+
+  const handleEndDateChange = (date: string) => {
+    setFormData(prev => ({ ...prev, endDate: date }));
   };
 
   const canCancelRequest = (request: any) => {
@@ -301,6 +496,28 @@ export default function LeavePage() {
     }
   };
 
+  // Function to check if a date should be disabled in the date picker
+  const isDateDisabled = (date: Date): boolean => {
+    const today = new Date();
+    const isPastDate = date < today && !isSameDay(date, today);
+    const { blocked } = isDateBlocked(date);
+    return isPastDate || blocked;
+  };
+
+  // Get date picker title for disabled dates
+  const getDateTitle = (date: Date): string => {
+    if (date < new Date() && !isSameDay(date, new Date())) {
+      return 'Past dates cannot be selected';
+    }
+    
+    const { blocked, reason } = isDateBlocked(date);
+    if (blocked) {
+      return reason || 'Date is not available';
+    }
+    
+    return '';
+  };
+
   const isLoading = authLoading || balanceLoading || requestsLoading || ((role === 'manager' || role === 'admin') && allRequestsLoading) || !dataInitialized;
 
   if (isLoading) {
@@ -358,6 +575,11 @@ export default function LeavePage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Leave Management</h1>
           <p className="mt-1 text-sm text-gray-600">Apply and manage your leave requests</p>
+          {userDepartment && (
+            <p className="mt-1 text-sm text-gray-500">
+              Department: <span className="font-medium">{userDepartment}</span>
+            </p>
+          )}
         </div>
         
         <div className="flex flex-col sm:flex-row gap-3">
@@ -394,6 +616,26 @@ export default function LeavePage() {
           </button>
         </div>
       </div>
+
+      {/* Department Availability Notice */}
+      {blockedDates.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+          <div className="flex items-start">
+            <svg className="w-5 h-5 text-yellow-400 mt-0.5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            <div>
+              <p className="text-sm text-yellow-800 font-medium">
+                Leave Availability in {userDepartment} Department
+              </p>
+              <p className="text-sm text-yellow-700 mt-1">
+                {blockedDates.length} business day(s) are already booked in your department. 
+                You cannot select dates that overlap with existing approved/pending leaves.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Leave Balance Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -472,7 +714,7 @@ export default function LeavePage() {
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {displayRequests.slice(0, 10).map((request: any) => (
+                    {displayRequests.slice(0, 10).map((request: LeaveRequest) => (
                       <tr key={request.id} className="hover:bg-gray-50">
                         {(role === 'manager' || role === 'admin') && (
                           <td className="px-4 sm:px-6 py-4">
@@ -532,7 +774,7 @@ export default function LeavePage() {
                             )}
                             
                             <button
-                              onClick={() => alert(`Leave Details:\nType: ${request.type}\nPeriod: ${format(new Date(request.startDate), 'MMM dd, yyyy')} - ${format(new Date(request.endDate), 'MMM dd, yyyy')}\nDays: ${request.days}\nReason: ${request.reason}\nStatus: ${request.status}`)}
+                              onClick={() => alert(`Leave Details:\nType: ${request.type}\nPeriod: ${format(new Date(request.startDate), 'MMM dd, yyyy')} - ${format(new Date(request.endDate), 'MMM dd, yyyy')}\nDays: ${request.days}\nReason: ${request.reason}\nStatus: ${request.status}\nDepartment: ${request.department}`)}
                               className="text-sm text-blue-600 hover:text-blue-900 px-2 py-1 hover:bg-blue-50 rounded"
                             >
                               View
@@ -575,6 +817,10 @@ export default function LeavePage() {
                   <div className="w-3 h-3 bg-pink-100 border border-pink-300 rounded-full"></div>
                   <span className="text-sm text-gray-600">Maternity</span>
                 </div>
+                <div className="flex items-center space-x-2">
+                  <div className="w-3 h-3 bg-gray-100 border border-gray-300 rounded-full"></div>
+                  <span className="text-sm text-gray-600">Unavailable</span>
+                </div>
               </div>
             </div>
           </div>
@@ -612,43 +858,76 @@ export default function LeavePage() {
 
             {/* Calendar Grid */}
             <div className="grid grid-cols-7 gap-1">
-              {calendarDays.map((day, dayIdx) => (
-                <div
-                  key={dayIdx}
-                  className={`min-h-[80px] p-1 border rounded-lg ${
-                    !day.isCurrentMonth ? 'border-gray-100 bg-gray-50' : 'border-gray-200'
-                  } ${day.isToday ? 'border-blue-300 bg-blue-50' : ''}`}
-                >
-                  <div className="flex justify-between items-center mb-1">
-                    <span className={`text-sm font-medium ${
-                      day.isCurrentMonth ? 'text-gray-900' : 'text-gray-400'
-                    } ${day.isToday ? 'text-blue-600' : ''}`}>
-                      {format(day.date, 'd')}
-                    </span>
-                    {day.events.length > 0 && (
-                      <span className="text-xs text-gray-500">{day.events.length}</span>
-                    )}
+              {calendarDays.map((day, dayIdx) => {
+                const { blocked, reason } = isDateBlocked(day.date);
+                
+                return (
+                  <div
+                    key={dayIdx}
+                    className={`min-h-[80px] p-1 border rounded-lg ${
+                      !day.isCurrentMonth ? 'border-gray-100 bg-gray-50' : 'border-gray-200'
+                    } ${day.isToday ? 'border-blue-300 bg-blue-50' : ''} ${
+                      blocked ? 'bg-red-50 border-red-200' : ''
+                    }`}
+                    title={reason}
+                  >
+                    <div className="flex justify-between items-center mb-1">
+                      <span className={`text-sm font-medium ${
+                        day.isCurrentMonth ? (blocked ? 'text-red-600' : 'text-gray-900') : 'text-gray-400'
+                      } ${day.isToday ? 'text-blue-600' : ''}`}>
+                        {format(day.date, 'd')}
+                      </span>
+                      {day.events.length > 0 && (
+                        <span className="text-xs text-gray-500">{day.events.length}</span>
+                      )}
+                      {blocked && (
+                        <span className="text-xs text-red-500">●</span>
+                      )}
+                    </div>
+                    
+                    {/* Events for the day */}
+                    <div className="space-y-1 max-h-[48px] overflow-y-auto">
+                      {day.events.slice(0, 2).map((event, idx) => (
+                        <div
+                          key={idx}
+                          className={`text-[10px] px-1 py-0.5 rounded truncate ${getLeaveColor(event.type)}`}
+                          title={`${event.type} - ${event.reason?.substring(0, 30)}...`}
+                        >
+                          {event.type}
+                        </div>
+                      ))}
+                      {day.events.length > 2 && (
+                        <div className="text-xs text-gray-500 px-1">
+                          +{day.events.length - 2} more
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  
-                  {/* Events for the day */}
-                  <div className="space-y-1 max-h-[48px] overflow-y-auto">
-                    {day.events.slice(0, 2).map((event, idx) => (
-                      <div
-                        key={idx}
-                        className={`text-[10px] px-1 py-0.5 rounded truncate ${getLeaveColor(event.type)}`}
-                        title={`${event.type} - ${event.reason?.substring(0, 30)}...`}
-                      >
-                        {event.type}
-                      </div>
-                    ))}
-                    {day.events.length > 2 && (
-                      <div className="text-xs text-gray-500 px-1">
-                        +{day.events.length - 2} more
-                      </div>
-                    )}
-                  </div>
+                );
+              })}
+            </div>
+            
+            {/* Calendar Legend */}
+            <div className="mt-6 pt-6 border-t border-gray-200">
+              <p className="text-sm text-gray-600 mb-2">Calendar Legend:</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div className="flex items-center space-x-2">
+                  <div className="w-3 h-3 bg-red-50 border border-red-200 rounded-full"></div>
+                  <span className="text-xs text-gray-700">Unavailable (taken by colleague)</span>
                 </div>
-              ))}
+                <div className="flex items-center space-x-2">
+                  <div className="w-3 h-3 bg-blue-50 border border-blue-300 rounded-full"></div>
+                  <span className="text-xs text-gray-700">Today</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="w-3 h-3 bg-gray-100 border border-gray-200 rounded-full"></div>
+                  <span className="text-xs text-gray-700">Different month</span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="w-3 h-3 bg-green-100 border border-green-200 rounded-full"></div>
+                  <span className="text-xs text-gray-700">Annual leave</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -668,7 +947,7 @@ export default function LeavePage() {
             <div className="flex justify-between text-sm">
               <span className="text-blue-700">Approved This Month:</span>
               <span className="font-medium text-blue-900">
-                {leaveRequests.filter((r: any) => 
+               {leaveRequests.filter((r: LeaveRequest) => 
                   r.status === 'approved' && 
                   new Date(r.createdAt).getMonth() === new Date().getMonth()
                 ).length}
@@ -678,8 +957,14 @@ export default function LeavePage() {
               <span className="text-blue-700">Total Days Used:</span>
               <span className="font-medium text-blue-900">
                 {leaveRequests
-                  .filter((r: any) => r.status === 'approved')
-                  .reduce((sum: number, r: any) => sum + (r.days || 0), 0)}
+                  .filter((r: LeaveRequest) => r.status === 'approved')
+                  .reduce((sum: number, r: LeaveRequest) => sum + (r.days || 0), 0)}
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-blue-700">Days Booked in Dept:</span>
+              <span className="font-medium text-blue-900">
+                {blockedDates.length}
               </span>
             </div>
           </div>
@@ -699,6 +984,14 @@ export default function LeavePage() {
             <li className="flex items-start">
               <span className="text-gray-500 mr-2">•</span>
               Unpaid leave doesn't affect balance
+            </li>
+            <li className="flex items-start">
+              <span className="text-gray-500 mr-2">•</span>
+              Cannot select dates already taken in your department
+            </li>
+            <li className="flex items-start">
+              <span className="text-gray-500 mr-2">•</span>
+              Weekends are automatically excluded
             </li>
           </ul>
         </div>
@@ -746,12 +1039,18 @@ export default function LeavePage() {
                   <input
                     type="date"
                     value={formData.startDate}
-                    onChange={(e) => setFormData({...formData, startDate: e.target.value})}
+                    onChange={(e) => handleStartDateChange(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                     required
                     disabled={loading}
-                    min={new Date().toISOString().split('T')[0]}
+                    min={getMinSelectableDate()}
+                    title="Select a start date. Past dates and dates already taken in your department are disabled."
                   />
+                  {formData.startDate && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Selected: {format(parseISO(formData.startDate), 'MMM dd, yyyy')}
+                    </p>
+                  )}
                 </div>
                 
                 <div>
@@ -761,12 +1060,18 @@ export default function LeavePage() {
                   <input
                     type="date"
                     value={formData.endDate}
-                    onChange={(e) => setFormData({...formData, endDate: e.target.value})}
+                    onChange={(e) => handleEndDateChange(e.target.value)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                     required
                     disabled={loading}
-                    min={formData.startDate || new Date().toISOString().split('T')[0]}
+                    min={formData.startDate || getMinSelectableDate()}
+                    title="Select an end date. Dates already taken in your department are disabled."
                   />
+                  {formData.endDate && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Selected: {format(parseISO(formData.endDate), 'MMM dd, yyyy')}
+                    </p>
+                  )}
                 </div>
               </div>
               
@@ -775,11 +1080,38 @@ export default function LeavePage() {
                   <p className="text-sm text-blue-800 font-medium">
                     {calculateBusinessDays(formData.startDate, formData.endDate)} business day(s)
                   </p>
+                  
+                  {/* Check for conflicts */}
+                  {(() => {
+                    const { available, conflicts } = checkDateAvailability(formData.startDate, formData.endDate);
+                    if (!available) {
+                      return (
+                        <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded">
+                          <p className="text-sm text-red-700 font-medium mb-1">Date Conflict Detected!</p>
+                          <p className="text-xs text-red-600">
+                            The selected dates overlap with leaves taken by:
+                          </p>
+                          <ul className="text-xs text-red-600 mt-1 space-y-1">
+                            {conflicts.slice(0, 2).map((conflict: LeaveRequest, idx: number) => (
+                              <li key={idx}>
+                                • {conflict.employeeName} ({conflict.type} leave)
+                              </li>
+                            ))}
+                            {conflicts.length > 2 && (
+                              <li>...and {conflicts.length - 2} more</li>
+                            )}
+                          </ul>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
+                  
                   {leaveBalance && formData.type !== 'unpaid' && (
-                    <p className="text-xs text-blue-700 mt-1">
-                      Balance: {leaveBalance[formData.type as keyof typeof leaveBalance]} days
+                    <p className="text-xs text-blue-700 mt-2">
+                      Balance: {(leaveBalance[formData.type as keyof typeof leaveBalance] as number)} days
                       <br />
-                      After: {leaveBalance[formData.type as keyof typeof leaveBalance] - calculateBusinessDays(formData.startDate, formData.endDate)} days
+                      After: {((leaveBalance[formData.type as keyof typeof leaveBalance] as number) - calculateBusinessDays(formData.startDate, formData.endDate))} days
                     </p>
                   )}
                 </div>
