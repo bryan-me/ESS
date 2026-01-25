@@ -94,11 +94,16 @@ interface LeaveRequest {
   createdAt: any;
 }
 
+// Update the LeaveBalance interface
 interface LeaveBalance {
   annual: number;
   sick: number;
-  personal: number;
+  maternity: number;
   unpaid: number;
+  personal: number; // Add this
+  totalDaysAccounted?: number; // Add this
+  lastUpdated?: any; // Add this
+  lastAutoUpdate?: any; // Add this
   updatedAt: string;
 }
 

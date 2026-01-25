@@ -24,6 +24,7 @@ export type Department = 'Finance/Admin' | 'Human Resource' | 'Procurement/Logis
 // UPDATED: Roles with department-specific variations
 export type UserRole = 'employee' | 'manager' | 'hr' | 'admin' | 'ceo' | 'finance_manager' | 'finance' | 'procurement' | 'logistics' | 'marketing' | 'sales';
 
+// Update the UserData interface to include hireDate
 interface UserData {
   uid: string;
   email: string | null;
@@ -37,6 +38,7 @@ interface UserData {
   requiresPasswordChange?: boolean;
   createdBy?: string;
   passwordChangedAt?: any;
+  hireDate?: string | any; // Add this line - could be string or Firestore timestamp
 }
 
 interface AuthContextType {
@@ -254,119 +256,142 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const createUser = async (userData: AdminCreateUserData): Promise<string> => {
-    console.log('🚀 Starting user creation. Current admin:', auth.currentUser?.email);
-    
-    try {
-      if (!auth.currentUser) {
-        throw new Error('You must be logged in to create users');
-      }
-
-      const currentUserRef = doc(db, 'users', auth.currentUser.uid);
-      const currentUserDoc = await getDoc(currentUserRef);
-      
-      if (!currentUserDoc.exists() || currentUserDoc.data().role !== 'admin') {
-        throw new Error('Only administrators can create users');
-      }
-
-      const adminBefore = {
-        email: auth.currentUser.email,
-        uid: auth.currentUser.uid
-      };
-      console.log('👑 Admin before creation:', adminBefore);
-
-      const { initializeApp } = await import('firebase/app');
-      const { 
-        getAuth, 
-        createUserWithEmailAndPassword: createUserAlt,
-        updateProfile: updateProfileAlt,
-        signOut: signOutAlt 
-      } = await import('firebase/auth');
-      const { getFirestore } = await import('firebase/firestore');
-
-      const altFirebaseConfig = {
-        apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-        authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-        projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-        storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-        messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-        appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
-      };
-
-      const altApp = initializeApp(altFirebaseConfig, `alt_app_${Date.now()}`);
-      const altAuth = getAuth(altApp);
-      const altDb = getFirestore(altApp);
-
-      try {
-        console.log('🔄 Creating user in separate Firebase instance...');
-        
-        const userCredential = await createUserAlt(
-          altAuth, 
-          userData.email, 
-          userData.temporaryPassword
-        );
-
-        console.log('✅ User created in alt instance:', userCredential.user.email);
-
-        await updateProfileAlt(userCredential.user, {
-          displayName: userData.displayName
-        });
-
-        await signOutAlt(altAuth);
-        console.log('👋 Signed out from alt instance');
-
-        console.log('📝 Creating Firestore documents...');
-        
-        const newUserRef = doc(db, 'users', userCredential.user.uid);
-        await setDoc(newUserRef, {
-          email: userData.email,
-          displayName: userData.displayName,
-          role: userData.role,
-          department: userData.department,
-          position: userData.position || 'Employee',
-          createdAt: serverTimestamp(),
-          hireDate: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          createdBy: auth.currentUser.uid,
-          requiresPasswordChange: true,
-          passwordChangedAt: null
-        });
-
-        const balanceRef = doc(db, 'leaveBalance', userCredential.user.uid);
-        await setDoc(balanceRef, {
-          annual: 0,
-          sick: 0,
-          personal: 0,
-          createdAt: serverTimestamp(),
-          totalDaysWorked: 0,
-          lastUpdated: serverTimestamp()
-        });
-
-        console.log('🔍 Checking admin status after creation...');
-        console.log('Admin after creation (main auth):', auth.currentUser?.email);
-        console.log('User created successfully:', userData.email);
-
-        return userCredential.user.uid;
-        
-      } finally {
-        console.log('🧹 Cleanup complete');
-      }
-      
-    } catch (error: any) {
-      console.error('❌ Create user error:', error);
-      
-      console.log('Admin status after error:', auth.currentUser?.email);
-      
-      if (error.code === 'auth/email-already-in-use') {
-        throw new Error('Email already in use');
-      } else if (error.code === 'auth/invalid-email') {
-        throw new Error('Invalid email address');
-      } else if (error.code === 'auth/weak-password') {
-        throw new Error('Password is too weak. Please use at least 6 characters.');
-      } else {
-        throw new Error(`Failed to create user: ${error.message}`);
-      }
+  console.log('🚀 Starting user creation. Current admin:', auth.currentUser?.email);
+  
+  try {
+    if (!auth.currentUser) {
+      throw new Error('You must be logged in to create users');
     }
-  };
+
+    const currentUserRef = doc(db, 'users', auth.currentUser.uid);
+    const currentUserDoc = await getDoc(currentUserRef);
+    
+    if (!currentUserDoc.exists() || currentUserDoc.data().role !== 'admin') {
+      throw new Error('Only administrators can create users');
+    }
+
+    const adminBefore = {
+      email: auth.currentUser.email,
+      uid: auth.currentUser.uid
+    };
+    console.log('👑 Admin before creation:', adminBefore);
+
+    const { initializeApp } = await import('firebase/app');
+    const { 
+      getAuth, 
+      createUserWithEmailAndPassword: createUserAlt,
+      updateProfile: updateProfileAlt,
+      signOut: signOutAlt 
+    } = await import('firebase/auth');
+    const { getFirestore } = await import('firebase/firestore');
+
+    const altFirebaseConfig = {
+      apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+      authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+      storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+      messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+      appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
+    };
+
+    const altApp = initializeApp(altFirebaseConfig, `alt_app_${Date.now()}`);
+    const altAuth = getAuth(altApp);
+    const altDb = getFirestore(altApp);
+
+    try {
+      console.log('🔄 Creating user in separate Firebase instance...');
+      
+      const userCredential = await createUserAlt(
+        altAuth, 
+        userData.email, 
+        userData.temporaryPassword
+      );
+
+      console.log('✅ User created in alt instance:', userCredential.user.email);
+
+      await updateProfileAlt(userCredential.user, {
+        displayName: userData.displayName
+      });
+
+      await signOutAlt(altAuth);
+      console.log('👋 Signed out from alt instance');
+
+      console.log('📝 Creating Firestore documents...');
+      
+      const newUserRef = doc(db, 'users', userCredential.user.uid);
+      await setDoc(newUserRef, {
+        email: userData.email,
+        displayName: userData.displayName,
+        role: userData.role,
+        department: userData.department,
+        position: userData.position || 'Employee',
+        createdAt: serverTimestamp(),
+        hireDate: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: auth.currentUser.uid,
+        requiresPasswordChange: true,
+        passwordChangedAt: null
+      });
+
+      // In the createUser function, update the leave balance initialization:
+      const balanceRef = doc(db, 'leaveBalance', userCredential.user.uid);
+
+      // Get current year for pro-rating
+      const currentYear = new Date().getFullYear();
+      let annualDays = 21;
+
+      // If creating user with hire date (you should add hireDate to AdminCreateUserData)
+      // For now, we'll use current date as hire date for new users
+      const hireDate = new Date();
+      if (hireDate.getFullYear() === currentYear) {
+        const monthsRemaining = 12 - hireDate.getMonth();
+        annualDays = Math.round((21 / 12) * monthsRemaining);
+        annualDays = Math.max(1, annualDays);
+      }
+
+      await setDoc(balanceRef, {
+        annual: annualDays,
+        sick: 10,
+        maternity: 180,
+        unpaid: 999,
+        personal: 0,
+        createdAt: serverTimestamp(),
+        totalDaysAccounted: 0,
+        lastUpdated: serverTimestamp(),
+        lastAutoUpdate: serverTimestamp(),
+        updatedAt: new Date().toISOString()
+      });
+
+      console.log('🔍 Checking admin status after creation...');
+      console.log('Admin after creation (main auth):', auth.currentUser?.email);
+      console.log('User created successfully:', userData.email);
+
+      return userCredential.user.uid;
+      
+    } finally {
+      console.log('🧹 Cleanup complete');
+    }
+    
+  } catch (error: any) {
+    console.error('❌ Create user error:', error);
+    
+    console.log('Admin status after error:', auth.currentUser?.email);
+    
+    // Return the error with the original Firebase error code
+    if (error.code === 'auth/email-already-in-use') {
+      throw new Error('This email address is already registered. Please use a different email.');
+    } else if (error.code === 'auth/invalid-email') {
+      throw new Error('The email address is not valid. Please enter a valid email.');
+    } else if (error.code === 'auth/weak-password') {
+      throw new Error('The password is too weak. Please use at least 6 characters.');
+    } else if (error.code === 'auth/operation-not-allowed') {
+      throw new Error('Email/password accounts are not enabled. Please contact your administrator.');
+    } else {
+      // Include the original error message for debugging
+      throw new Error(`Failed to create user: ${error.message || 'Unknown error occurred'}`);
+    }
+  }
+};
 
   const changePassword = async (currentPassword: string, newPassword: string) => {
     try {

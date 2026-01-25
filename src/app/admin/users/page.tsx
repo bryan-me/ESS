@@ -13,7 +13,10 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   FunnelIcon,
-  XMarkIcon
+  XMarkIcon,
+  ExclamationCircleIcon,
+  CheckCircleIcon,
+  InformationCircleIcon
 } from '@heroicons/react/24/outline';
 import { useRouter } from 'next/navigation';
 
@@ -39,9 +42,13 @@ export default function AdminUsersPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<FirestoreUser | null>(null);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  // const [error, setError] = useState('');
+  // const [success, setSuccess] = useState('');
   const router = useRouter();
+
+  const [error, setError] = useState<string>('');
+  const [success, setSuccess] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -135,41 +142,75 @@ export default function AdminUsersPage() {
   };
 
   const handleCreateUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSuccess('');
+  e.preventDefault();
+  setError('');
+  setSuccess('');
+  setIsSubmitting(true); // Add loading state
 
-    try {
-      const newUserId = await createUser({
-        email: formData.email,
-        displayName: formData.displayName,
-        role: formData.role,
-        department: formData.department,
-        position: formData.position,
-        temporaryPassword: formData.temporaryPassword
-      });
+  try {
+    const newUserId = await createUser({
+      email: formData.email,
+      displayName: formData.displayName,
+      role: formData.role,
+      department: formData.department,
+      position: formData.position,
+      temporaryPassword: formData.temporaryPassword
+    });
 
-      setSuccess(`User ${formData.displayName} created successfully! User ID: ${newUserId}`);
-      setShowCreateModal(false);
-      resetForm();
-      fetchTotalUsers();
-      fetchUsers(currentPage);
-      
-      setTimeout(() => {
-        alert(
-          `✅ User created successfully!\n\n` +
-          `Name: ${formData.displayName}\n` +
-          `Email: ${formData.email}\n` +
-          `Temporary Password: ${formData.temporaryPassword}\n\n` +
-          `Please provide these credentials to the user.\n\n` +
-          `Note: You are still logged in as admin.`
-        );
-      }, 100);
-      
-    } catch (err: any) {
-      setError(err.message || 'Failed to create user');
+    setSuccess(`User ${formData.displayName} created successfully!`);
+    setShowCreateModal(false);
+    resetForm();
+    fetchTotalUsers();
+    fetchUsers(currentPage);
+    
+    // Show success notification with user details
+    setTimeout(() => {
+      // You can use a toast notification library or custom modal
+      alert(
+        `✅ User created successfully!\n\n` +
+        `Name: ${formData.displayName}\n` +
+        `Email: ${formData.email}\n` +
+        `Temporary Password: ${formData.temporaryPassword}\n\n` +
+        `Please provide these credentials to the user.\n\n` +
+        `Note: You are still logged in as admin.`
+      );
+    }, 100);
+    
+  } catch (err: any) {
+    console.error('Create user error:', err);
+    
+    // Handle specific error cases
+    let errorMessage = err.message || 'Failed to create user';
+    
+    // Make error messages more user-friendly
+    if (errorMessage.includes('email-already-in-use') || 
+        errorMessage.includes('already registered') ||
+        errorMessage.includes('already in use')) {
+      errorMessage = 'This email address is already registered. Please use a different email.';
+    } else if (errorMessage.includes('invalid-email')) {
+      errorMessage = 'The email address is not valid. Please enter a valid email address.';
+    } else if (errorMessage.includes('weak-password')) {
+      errorMessage = 'The password is too weak. Please use at least 6 characters.';
+    } else if (errorMessage.includes('Only administrators')) {
+      errorMessage = 'You do not have permission to create users. Only administrators can create users.';
+    } else if (errorMessage.includes('logged in')) {
+      errorMessage = 'You must be logged in to create users. Please log in again.';
     }
-  };
+    
+    setError(errorMessage);
+    
+    // Scroll to error if it's not visible
+    setTimeout(() => {
+      const errorElement = document.getElementById('create-user-error');
+      if (errorElement) {
+        errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 100);
+    
+  } finally {
+    setIsSubmitting(false); // Reset loading state
+  }
+};
 
   const handleUpdateUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -802,6 +843,60 @@ export default function AdminUsersPage() {
                 <h3 className="text-lg font-medium text-gray-900 mb-4">Create New User</h3>
                 <form onSubmit={handleCreateUser}>
                   <div className="space-y-4">
+                    {/* Error Message Display */}
+                    {error && (
+                      <div 
+                        id="create-user-error"
+                        className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md"
+                      >
+                        <div className="flex items-start">
+                          <ExclamationCircleIcon className="h-5 w-5 text-red-500 mt-0.5 mr-3 flex-shrink-0" />
+                          <div className="flex-1">
+                            <p className="font-medium text-red-800">Cannot Create User</p>
+                            <p className="text-red-700 text-sm mt-1">{error}</p>
+                            {error.includes('email-already-in-use') || error.includes('already registered') ? (
+                              <p className="text-red-600 text-xs mt-2">
+                                Tip: Try using a different email address or check if the user already exists.
+                              </p>
+                            ) : null}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setError('')}
+                            className="ml-2 text-red-500 hover:text-red-700 flex-shrink-0"
+                            aria-label="Dismiss error"
+                          >
+                            <XMarkIcon className="h-5 w-5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Success Message Display */}
+                    {success && (
+                      <div className="bg-green-50 border-l-4 border-green-500 p-4 rounded-md">
+                        <div className="flex items-start">
+                          <CheckCircleIcon className="h-5 w-5 text-green-500 mt-0.5 mr-3 flex-shrink-0" />
+                          <div className="flex-1">
+                            <p className="font-medium text-green-800">User Created Successfully</p>
+                            <p className="text-green-700 text-sm mt-1">{success}</p>
+                            <p className="text-green-600 text-xs mt-2">
+                              Don't forget to provide the temporary password to the user.
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSuccess('')}
+                            className="ml-2 text-green-500 hover:text-green-700 flex-shrink-0"
+                            aria-label="Dismiss success message"
+                          >
+                            <XMarkIcon className="h-5 w-5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Form Fields */}
                     <div>
                       <label htmlFor="email" className="block text-sm font-medium text-gray-700">
                         Email Address *
@@ -812,9 +907,17 @@ export default function AdminUsersPage() {
                         required
                         value={formData.email}
                         onChange={(e) => setFormData({...formData, email: e.target.value})}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm disabled:bg-gray-50 disabled:text-gray-500"
+                        disabled={isSubmitting}
+                        aria-invalid={error?.includes('email') ? 'true' : 'false'}
                       />
+                      {error?.includes('email') && !error?.includes('already') ? (
+                        <p className="mt-1 text-xs text-red-600">
+                          Please enter a valid email address (e.g., user@example.com)
+                        </p>
+                      ) : null}
                     </div>
+                    
                     <div>
                       <label htmlFor="displayName" className="block text-sm font-medium text-gray-700">
                         Full Name *
@@ -825,9 +928,17 @@ export default function AdminUsersPage() {
                         required
                         value={formData.displayName}
                         onChange={(e) => setFormData({...formData, displayName: e.target.value})}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm disabled:bg-gray-50 disabled:text-gray-500"
+                        disabled={isSubmitting}
+                        aria-invalid={error?.includes('Full name') ? 'true' : 'false'}
                       />
+                      {error?.includes('Full name') ? (
+                        <p className="mt-1 text-xs text-red-600">
+                          Please enter the user's full name
+                        </p>
+                      ) : null}
                     </div>
+                    
                     <div>
                       <label htmlFor="role" className="block text-sm font-medium text-gray-700">
                         Role *
@@ -837,14 +948,23 @@ export default function AdminUsersPage() {
                         required
                         value={formData.role}
                         onChange={(e) => setFormData({...formData, role: e.target.value as UserRole})}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm disabled:bg-gray-50 disabled:text-gray-500"
+                        disabled={isSubmitting}
+                        aria-invalid={error?.includes('Role') ? 'true' : 'false'}
                       >
+                        <option value="">Select a role</option>
                         <option value="employee">Employee</option>
                         <option value="manager">Manager</option>
                         <option value="hr">HR</option>
                         <option value="admin">Administrator</option>
                       </select>
+                      {error?.includes('Role') ? (
+                        <p className="mt-1 text-xs text-red-600">
+                          Please select a role for the user
+                        </p>
+                      ) : null}
                     </div>
+                    
                     <div>
                       <label htmlFor="department" className="block text-sm font-medium text-gray-700">
                         Department *
@@ -854,15 +974,24 @@ export default function AdminUsersPage() {
                         required
                         value={formData.department}
                         onChange={(e) => setFormData({...formData, department: e.target.value as Department})}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm disabled:bg-gray-50 disabled:text-gray-500"
+                        disabled={isSubmitting}
+                        aria-invalid={error?.includes('Department') ? 'true' : 'false'}
                       >
+                        <option value="">Select a department</option>
                         <option value="Finance/Admin">Finance/Admin</option>
                         <option value="Human Resource">Human Resource</option>
                         <option value="Procurement/Logistics">Procurement/Logistics</option>
                         <option value="Marketing and Sales">Marketing and Sales</option>
                         <option value="General">General</option>
                       </select>
+                      {error?.includes('Department') ? (
+                        <p className="mt-1 text-xs text-red-600">
+                          Please select a department for the user
+                        </p>
+                      ) : null}
                     </div>
+                    
                     <div>
                       <label htmlFor="position" className="block text-sm font-medium text-gray-700">
                         Position
@@ -872,9 +1001,12 @@ export default function AdminUsersPage() {
                         id="position"
                         value={formData.position}
                         onChange={(e) => setFormData({...formData, position: e.target.value})}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm disabled:bg-gray-50 disabled:text-gray-500"
+                        disabled={isSubmitting}
+                        placeholder="e.g., Senior Developer, Accountant, etc."
                       />
                     </div>
+                    
                     <div>
                       <label htmlFor="temporaryPassword" className="block text-sm font-medium text-gray-700">
                         Temporary Password *
@@ -885,27 +1017,53 @@ export default function AdminUsersPage() {
                         required
                         value={formData.temporaryPassword}
                         onChange={(e) => setFormData({...formData, temporaryPassword: e.target.value})}
-                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
+                        className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm disabled:bg-gray-50 disabled:text-gray-500"
                         placeholder="Will be required to change on first login"
+                        disabled={isSubmitting}
+                        aria-invalid={error?.includes('Password') || error?.includes('password') ? 'true' : 'false'}
                       />
-                      <p className="mt-1 text-xs text-gray-500">
-                        User must change this password on first login
-                      </p>
+                      <div className="mt-1 flex items-center text-xs text-gray-500">
+                        <InformationCircleIcon className="h-4 w-4 mr-1 flex-shrink-0" />
+                        <span>User must change this password on first login</span>
+                      </div>
+                      {error?.includes('Password') || error?.includes('password') ? (
+                        <p className="mt-1 text-xs text-red-600">
+                          Password must be at least 6 characters long
+                        </p>
+                      ) : null}
                     </div>
                   </div>
+                  
                   <div className="mt-6 flex justify-end space-x-3">
                     <button
                       type="button"
-                      onClick={() => setShowCreateModal(false)}
-                      className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                      onClick={() => {
+                        setShowCreateModal(false);
+                        setError('');
+                        setSuccess('');
+                        resetForm();
+                      }}
+                      className="px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                      disabled={isSubmitting}
                     >
                       Cancel
                     </button>
                     <button
                       type="submit"
-                      className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                      disabled={isSubmitting}
+                      className="px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center min-w-[120px]"
                     >
-                      Create User
+                      {isSubmitting ? (
+                        <>
+                          <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          Creating...
+                        </>
+                      ) : (
+                        'Create User'
+                      )}
                     </button>
                   </div>
                 </form>
@@ -1017,4 +1175,8 @@ export default function AdminUsersPage() {
       </div>
     </div>
   );
+}
+
+function setIsSubmitting(arg0: boolean) {
+  throw new Error('Function not implemented.');
 }

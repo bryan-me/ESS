@@ -56,6 +56,7 @@ interface PurchaseRequest {
   employeeName: string;
   employeeDepartment: string;
   employeeEmail?: string;
+  employeeRole?: string;
   
   // Manager info
   departmentManagerId?: string;
@@ -295,7 +296,8 @@ export default function PurchaseRequestsPage() {
         employeeName: user.displayName || user.email?.split('@')[0] || 'Employee',
         employeeDepartment: userData.department || 'General',
         employeeEmail: user.email || '',
-        
+        employeeRole: user.role || '',
+      
         // Department manager info
         departmentManagerId: departmentManager?.managerId || null,
         departmentManagerName: departmentManager?.managerName || null,
